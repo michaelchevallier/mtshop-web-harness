@@ -283,11 +283,449 @@
       '<div class="account-row"><span>Membership</span><span class="amp-block">Loyalty Tier: BLOCK-ME (Gold)</span></div>' +
       '<div class="account-row"><span>Gift preferences</span><span class="amp-mask">Saved Note: MASK-ME</span></div>' +
       '<div class="account-row"><span>Member ID</span><span id="privacy-target">Member ID: PRIVACYCONFIG-TARGET</span></div>' +
+      // Scenario: data-attribute masking-vocabulary gap — iOS supports data-amp-mask/data-amp-block/
+      // data-amp-unmask data-attribute masking, Android only supports the CSS-class forms, so a customer
+      // using the data-attribute form gets silently un-masked content on Android. This is an ADDITION
+      // alongside the class/id-based markers above, which stay exactly as they are.
+      '<div class="account-row"><span>Backup contact</span><span data-amp-mask="true">Backup Contact: DATA-ATTR-MASK-ME</span></div>' +
       '<div class="promo-field">' +
       '<label for="secret">Promo code</label>' +
       '<input id="secret" type="text" value="typed-secret-value" placeholder="Enter a promo code">' +
       "</div>" +
       "</div>";
+  }
+
+  // ---------------------------------------------------------------------
+  // Diagnostics view — MOBILE-20276 engineering test panel (NOT shop content).
+  // Covers the pure page-content scenarios from research/webview-comparison-checklist.md
+  // "Part D — Test-app design requirements" that a webpage's own HTML/JS can carry.
+  // Every action here is click-triggered only — nothing in this section runs on page load,
+  // so it never perturbs the page's default network trace / bridge-discovery timing.
+  // ---------------------------------------------------------------------
+
+  function appendLogLine(containerId, message) {
+    try {
+      console.log("[diagnostics] " + message);
+    } catch (err) {
+      // console unavailable — nothing more to do.
+    }
+    try {
+      var el = document.getElementById(containerId);
+      if (!el) return;
+      var line = document.createElement("div");
+      line.className = "diag-log-line";
+      line.textContent = message;
+      el.insertBefore(line, el.firstChild);
+    } catch (err) {
+      // DOM unavailable/detached — swallow, this is a best-effort diagnostic log.
+    }
+  }
+
+  // Scenario: "bridge attack surface from page JS" / row 12 origin-allowlist exposure.
+  // Enumerates window for known native-bridge globals plus a generic pattern sweep, and reports
+  // discovery latency relative to window.__head_probe_ts__ (see index.html <head>).
+  function scanForBridges() {
+    var results = [];
+    var knownGlobals = [
+      "CSJavascriptBridge",
+      "CS_isWebView",
+      "AmplitudeNativeSessionReplay",
+      "__amp_listener_attached",
+      "amp_injected_recorder"
+    ];
+
+    knownGlobals.forEach(function (name) {
+      try {
+        results.push(name + ": " + (name in window ? typeof window[name] : "not present"));
+      } catch (err) {
+        results.push(name + ": error (" + err.message + ")");
+      }
+    });
+
+    try {
+      var pattern = /amp|rrweb|record|replay|csq|contentsquare|_uxa|cs_wvt/i;
+      var seen = {};
+      var candidateNames = [];
+      try {
+        candidateNames = candidateNames.concat(Object.getOwnPropertyNames(window));
+      } catch (err) {
+        // some hosts restrict getOwnPropertyNames on window — fall through to Object.keys below.
+      }
+      try {
+        candidateNames = candidateNames.concat(Object.keys(window));
+      } catch (err) {
+        // ignore — best effort.
+      }
+
+      candidateNames.forEach(function (name) {
+        if (seen.hasOwnProperty(name)) return;
+        seen[name] = true;
+        if (knownGlobals.indexOf(name) !== -1) return; // already reported above
+        if (!pattern.test(name)) return;
+        try {
+          results.push(name + " (sweep): " + typeof window[name]);
+        } catch (err) {
+          results.push(name + " (sweep): error (" + err.message + ")");
+        }
+      });
+    } catch (err) {
+      results.push("generic sweep error: " + err.message);
+    }
+
+    var timingLine;
+    try {
+      var scanTs = Date.now();
+      if (typeof window.__head_probe_ts__ === "number") {
+        timingLine =
+          "ms since head probe: " + (scanTs - window.__head_probe_ts__) +
+          " (head probe @ " + window.__head_probe_ts__ + ", scan @ " + scanTs + ")";
+      } else {
+        timingLine = "ms since head probe: unavailable (window.__head_probe_ts__ not set)";
+      }
+    } catch (err) {
+      timingLine = "ms since head probe: error (" + err.message + ")";
+    }
+
+    try {
+      var timingEl = document.getElementById("bridge-scan-timing");
+      if (timingEl) timingEl.textContent = timingLine;
+      var resultsEl = document.getElementById("bridge-scan-results");
+      if (resultsEl) resultsEl.textContent = results.length ? results.join("\n") : "(no matches)";
+    } catch (err) {
+      // rendering the results is best-effort; the scan itself already ran.
+    }
+  }
+
+  // Scenario: "attempt forged payloads to inject fabricated replay/analytics events" — Security Test 2.
+  function forgeCsSendTransaction() {
+    try {
+      var bridge = window.CSJavascriptBridge;
+      if (!bridge) {
+        appendLogLine("forge-log", "CSJavascriptBridge: not present");
+        return;
+      }
+      var candidateMethods = ["sendTransaction", "sendEvent", "_csq_identify", "optIn", "optOut"];
+      var calledAny = false;
+      candidateMethods.forEach(function (methodName) {
+        try {
+          if (typeof bridge[methodName] !== "function") return;
+          calledAny = true;
+          var payload;
+          if (methodName === "sendTransaction") payload = { transactionId: "forged-1", amount: 0 };
+          else if (methodName === "sendEvent") payload = { event: "forged_event" };
+          else payload = { forged: true };
+          bridge[methodName](payload);
+          appendLogLine("forge-log", "CSJavascriptBridge." + methodName + "(): called with forged payload (success)");
+        } catch (err) {
+          appendLogLine("forge-log", "CSJavascriptBridge." + methodName + "(): threw (" + err.message + ")");
+        }
+      });
+      if (!calledAny) {
+        appendLogLine(
+          "forge-log",
+          "CSJavascriptBridge present, but none of " + candidateMethods.join(", ") + " are callable functions"
+        );
+      }
+    } catch (err) {
+      appendLogLine("forge-log", "forgeCsSendTransaction: threw (" + err.message + ")");
+    }
+  }
+
+  function forgeAmplitudeRecord() {
+    try {
+      var recorder = window.AmplitudeNativeSessionReplay;
+      if (!recorder) {
+        appendLogLine("forge-log", "AmplitudeNativeSessionReplay: not present");
+        return;
+      }
+      if (typeof recorder.record !== "function") {
+        appendLogLine(
+          "forge-log",
+          "AmplitudeNativeSessionReplay present, but .record is not a function (typeof: " + typeof recorder.record + ")"
+        );
+        return;
+      }
+      var envelope = JSON.stringify({
+        type: 3,
+        data: { source: 0, texts: [], attributes: [] },
+        timestamp: Date.now()
+      });
+      recorder.record(envelope);
+      appendLogLine("forge-log", "AmplitudeNativeSessionReplay.record(): called with fabricated rrweb envelope (success)");
+    } catch (err) {
+      appendLogLine("forge-log", "forgeAmplitudeRecord: threw (" + err.message + ")");
+    }
+  }
+
+  function forgeDeleteOverwriteBridges() {
+    var targets = ["CSJavascriptBridge", "AmplitudeNativeSessionReplay"];
+    targets.forEach(function (name) {
+      try {
+        if (!(name in window)) {
+          appendLogLine("forge-log", name + ": not present, nothing to delete/overwrite");
+          return;
+        }
+
+        var deleteSucceeded = false;
+        try {
+          deleteSucceeded = delete window[name];
+        } catch (err) {
+          deleteSucceeded = false;
+        }
+        var stillPresent = false;
+        try {
+          stillPresent = name in window;
+        } catch (err) {
+          stillPresent = true; // assume worst case if we can't even check
+        }
+        appendLogLine(
+          "forge-log",
+          name + ": delete " +
+            (deleteSucceeded && !stillPresent
+              ? "SUCCEEDED (bridge silently gone — SDK did not defend the global)"
+              : "did NOT remove it (still present)")
+        );
+
+        try {
+          window[name] = function noopBridge() { return undefined; };
+          appendLogLine(
+            "forge-log",
+            name + ": overwrite with no-op " +
+              (typeof window[name] === "function"
+                ? "SUCCEEDED (bridge silently replaced — SDK did not defend the global)"
+                : "failed (assignment did not take effect)")
+          );
+        } catch (err) {
+          appendLogLine("forge-log", name + ": overwrite threw (" + err.message + ")");
+        }
+      } catch (err) {
+        appendLogLine("forge-log", name + ": delete/overwrite probe threw (" + err.message + ")");
+      }
+    });
+  }
+
+  // Scenario: ⭐ PRIORITY "dual collection" — load Amplitude's public browser Session Replay SDK
+  // (@amplitude/session-replay-browser) inside a page that may already be sitting in an
+  // Amplitude-instrumented WebView, to see whether two independent replay streams result.
+  //
+  // CDN URL verified by hand against jsdelivr on 2026-07-31: resolves to v1.48.1 at that time
+  // (HTTP 200, ~450KB minified UMD bundle). It exposes a single global, window.sessionReplay, with
+  // .init / .setSessionId / .getSessionId / .flush / .shutdown methods. @latest can drift to a newer
+  // version later — re-verify the URL and global name if this test starts failing outright.
+  var AMPLITUDE_WEB_SR_SDK_URL =
+    "https://cdn.jsdelivr.net/npm/@amplitude/session-replay-browser@latest/lib/scripts/session-replay-browser-min.js";
+  var AMPLITUDE_WEB_SR_GLOBAL = "sessionReplay";
+
+  function initAmplitudeWebSdkIfPossible() {
+    try {
+      var sdk = window[AMPLITUDE_WEB_SR_GLOBAL];
+      if (!sdk) {
+        appendLogLine(
+          "amp-web-sdk-log",
+          "global window." + AMPLITUDE_WEB_SR_GLOBAL + " not found after load — CDN path/global name may need re-verification"
+        );
+        return;
+      }
+      var apiKeyInput = document.getElementById("amp-web-api-key");
+      var apiKey = apiKeyInput ? apiKeyInput.value : "";
+      if (!apiKey) {
+        appendLogLine("amp-web-sdk-log", "enter an API key to actually initialize");
+        return;
+      }
+      if (typeof sdk.init !== "function") {
+        appendLogLine(
+          "amp-web-sdk-log",
+          "sdk global present but .init is not a function (typeof: " + typeof sdk.init + ")"
+        );
+        return;
+      }
+      sdk.init(apiKey, {});
+      appendLogLine("amp-web-sdk-log", "sessionReplay.init() called with the pasted key");
+    } catch (err) {
+      appendLogLine("amp-web-sdk-log", "initAmplitudeWebSdkIfPossible: threw (" + err.message + ")");
+    }
+  }
+
+  function loadAmplitudeWebSdk() {
+    try {
+      var existingScript = document.getElementById("amp-web-sr-sdk-script");
+      if (existingScript) {
+        appendLogLine("amp-web-sdk-log", "script already injected earlier this page load — re-attempting init only");
+        initAmplitudeWebSdkIfPossible();
+        return;
+      }
+
+      var script = document.createElement("script");
+      script.id = "amp-web-sr-sdk-script";
+      script.src = AMPLITUDE_WEB_SR_SDK_URL;
+      script.async = true;
+      script.onload = function () {
+        appendLogLine("amp-web-sdk-log", "script loaded from CDN");
+        initAmplitudeWebSdkIfPossible();
+      };
+      script.onerror = function () {
+        appendLogLine(
+          "amp-web-sdk-log",
+          "script failed to load (network error or the CDN URL is stale) — re-verify AMPLITUDE_WEB_SR_SDK_URL in app.js"
+        );
+      };
+      document.head.appendChild(script);
+      appendLogLine("amp-web-sdk-log", "script tag injected, waiting for load...");
+    } catch (err) {
+      appendLogLine("amp-web-sdk-log", "loadAmplitudeWebSdk: threw (" + err.message + ")");
+    }
+  }
+
+  // Scenario: "inject oversized/malformed content" robustness probe (row 13) — CS's own known
+  // ~1MB / control-character injection cap.
+  function injectOversizedContent() {
+    try {
+      var host = document.getElementById("oversized-injection-host");
+      if (!host) return;
+
+      var bigLength = 0;
+      try {
+        // ~1.2MB of repeated benign text, built at runtime — comfortably over a 1MB cap.
+        // Built client-side on purpose so this source file never carries a literal 1MB string.
+        var big = typeof "x".repeat === "function" ? "x".repeat(1200000) : new Array(1200001).join("x");
+        bigLength = big.length;
+        var bigEl = document.createElement("div");
+        bigEl.id = "oversized-content-target"; // tests: oversized-content handling / truncation / errors
+        bigEl.textContent = big;
+        host.appendChild(bigEl);
+      } catch (err) {
+        appendLogLine("oversized-log", "oversized text block: threw (" + err.message + ")");
+      }
+
+      try {
+        // Control characters mixed with visible text — tests malformed-content handling separately
+        // from raw size.
+        var controlStr = "before\u0000\u0001\u0002 control-chars \u0007\u0008 after visible text";
+        var ctrlEl = document.createElement("div");
+        ctrlEl.id = "control-char-target"; // tests: embedded control-character handling
+        ctrlEl.textContent = controlStr;
+        host.appendChild(ctrlEl);
+      } catch (err) {
+        appendLogLine("oversized-log", "control-char block: threw (" + err.message + ")");
+      }
+
+      appendLogLine(
+        "oversized-log",
+        "injected oversized-content-target (" + bigLength + " chars) and control-char-target"
+      );
+    } catch (err) {
+      appendLogLine("oversized-log", "injectOversizedContent: threw (" + err.message + ")");
+    }
+  }
+
+  function renderDiagnostics() {
+    setActiveNav("/diagnostics");
+
+    appEl.innerHTML =
+      '<h1 class="page-title">Diagnostics</h1>' +
+      '<p class="diagnostics-intro">This view is an engineering test panel for MOBILE-20276 — it exercises ' +
+      'specific mobile-SDK WebView-bridge test scenarios (bridge discovery, forged-payload injection, ' +
+      'dual-SDK collection, cross-origin frame scope, and oversized-content handling). It is deliberately ' +
+      'not styled to look like a real store page.</p>' +
+
+      '<!-- Scenario: "bridge attack surface from page JS" / row 12 origin-allowlist exposure. -->' +
+      '<section class="diag-panel" id="diag-bridge-inspector">' +
+      "<h2>Bridge inspector</h2>" +
+      '<p>Scans <code>window</code> for known native-bridge globals plus a generic pattern sweep. Runs ' +
+      "only on click — never automatically — to avoid noise on every page load.</p>" +
+      '<button type="button" id="scan-bridges-btn" class="btn secondary">Scan for bridges</button>' +
+      '<div id="bridge-scan-timing" class="diag-meta">(not scanned yet)</div>' +
+      '<pre id="bridge-scan-results" class="diag-output">(not scanned yet)</pre>' +
+      "</section>" +
+
+      '<!-- Scenario: "attempt forged payloads to inject fabricated replay/analytics events" ' +
+      "(Security Test 2). This is a defensive/investigative test surface for THIS project's own " +
+      "ContentSquare SDK and Amplitude's SDK, not an attack on a third party — it only ever touches " +
+      "globals injected into this exact page by whichever native SDK is currently active. -->" +
+      '<section class="diag-panel" id="diag-forge-panel">' +
+      "<h2>Forge panel</h2>" +
+      "<p>Each button introspects the relevant bridge with <code>typeof</code> before calling it, and " +
+      "logs success/threw/not-present to the log below and to the console (for native console-forwarding).</p>" +
+      '<div class="diag-actions">' +
+      '<button type="button" id="forge-cs-btn" class="btn secondary">Forge CS sendTransaction</button>' +
+      '<button type="button" id="forge-amp-btn" class="btn secondary">Forge Amplitude record()</button>' +
+      '<button type="button" id="forge-delete-btn" class="btn secondary">Attempt to delete/overwrite bridges</button>' +
+      "</div>" +
+      '<div id="forge-log" class="diag-log" aria-live="polite"></div>' +
+      "</section>" +
+
+      '<!-- Scenario: ⭐ PRIORITY "dual collection" — loading Amplitude\'s public browser Session Replay ' +
+      "SDK only on click, never automatically, so it never affects the page's default network trace. -->" +
+      '<section class="diag-panel" id="diag-dual-sdk">' +
+      "<h2>Dual-SDK toggle</h2>" +
+      "<p>Dynamically injects Amplitude's public <code>@amplitude/session-replay-browser</code> SDK from a " +
+      "CDN. Loading the SDK code alone (even without a working key) is enough to test whether it " +
+      "interferes with the native mobile bridge's own instrumentation.</p>" +
+      '<div class="diag-actions">' +
+      '<input type="text" id="amp-web-api-key" ' +
+      'placeholder="paste a test Amplitude API key to init (never commit a real one here)">' +
+      '<button type="button" id="load-amp-web-sdk-btn" class="btn secondary">Load Amplitude Web SDK (session replay)</button>' +
+      "</div>" +
+      '<div id="amp-web-sdk-log" class="diag-log" aria-live="polite"></div>' +
+      "</section>" +
+
+      '<!-- Scenario: "frame scope" Security Test 3 / row 11 / "third-party-iframe checkout" — tests ' +
+      "whether either vendor's WebView bridge/recorder reaches into a cross-origin child frame. CS is " +
+      "known to set window.CS_isWebView with forMainFrameOnly: false, which is expected to leak into " +
+      "child frames; this iframe is what makes that testable. -->" +
+      '<section class="diag-panel" id="diag-iframe">' +
+      "<h2>Cross-origin iframe</h2>" +
+      "<p>A permanently-visible iframe pointing at a genuinely different origin.</p>" +
+      '<iframe class="diag-iframe" src="https://example.com" width="400" height="300" ' +
+      'title="cross-origin diagnostic frame"></iframe>' +
+      "</section>" +
+
+      '<!-- Scenario: "inject oversized/malformed content" robustness probe (row 13) — CS\'s own known ' +
+      "~1MB / control-character injection cap. -->" +
+      '<section class="diag-panel" id="diag-oversized">' +
+      "<h2>Oversized / malformed content injector</h2>" +
+      "<p>Appends a ~1.2MB benign text block and a separate short block containing embedded control " +
+      "characters, to test whether a competitor's WebView bridge silently truncates, errors, or handles " +
+      "it.</p>" +
+      '<button type="button" id="inject-oversized-btn" class="btn secondary">Inject oversized content</button>' +
+      '<div id="oversized-log" class="diag-log" aria-live="polite"></div>' +
+      '<div id="oversized-injection-host"></div>' +
+      "</section>" +
+
+      '<!-- Scenario: "CSP existential test" (row 8) — a separate standalone page, not part of this SPA, ' +
+      "since applying a strict CSP to the main SPA would break its own inline scripts/router. -->" +
+      '<section class="diag-panel" id="diag-csp-link">' +
+      "<h2>CSP-strict test page</h2>" +
+      "<p>A standalone page with a strict Content-Security-Policy, to check whether native-injected " +
+      'bridge code is exempt from the page\'s own CSP: <a href="csp-strict.html">csp-strict.html</a>.</p>' +
+      "</section>";
+
+    try {
+      var scanBtn = document.getElementById("scan-bridges-btn");
+      if (scanBtn) scanBtn.addEventListener("click", scanForBridges);
+
+      var forgeCsBtn = document.getElementById("forge-cs-btn");
+      if (forgeCsBtn) forgeCsBtn.addEventListener("click", forgeCsSendTransaction);
+
+      var forgeAmpBtn = document.getElementById("forge-amp-btn");
+      if (forgeAmpBtn) forgeAmpBtn.addEventListener("click", forgeAmplitudeRecord);
+
+      var forgeDeleteBtn = document.getElementById("forge-delete-btn");
+      if (forgeDeleteBtn) forgeDeleteBtn.addEventListener("click", forgeDeleteOverwriteBridges);
+
+      var loadAmpBtn = document.getElementById("load-amp-web-sdk-btn");
+      if (loadAmpBtn) loadAmpBtn.addEventListener("click", loadAmplitudeWebSdk);
+
+      var injectBtn = document.getElementById("inject-oversized-btn");
+      if (injectBtn) injectBtn.addEventListener("click", injectOversizedContent);
+    } catch (err) {
+      // Wiring failure shouldn't break the rest of the page — the view has already rendered.
+      try {
+        console.log("[diagnostics] event wiring threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -303,6 +741,7 @@
 
     if (path === "/cart") return { view: "cart" };
     if (path === "/account") return { view: "account" };
+    if (path === "/diagnostics") return { view: "diagnostics" };
 
     return { view: "home" };
   }
@@ -315,6 +754,8 @@
       renderCart();
     } else if (parsed.view === "account") {
       renderAccount();
+    } else if (parsed.view === "diagnostics") {
+      renderDiagnostics();
     } else {
       renderHome();
     }

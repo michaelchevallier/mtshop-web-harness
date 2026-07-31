@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MTShop — CSP-strict test page</title>
+
+  <!-- Scenario: "CSP existential test" (row 8) — whether native-injected bridge code is exempt from
+       the page's own CSP. Existential for Amplitude (its WebView bridge has no page-hosted fallback)
+       and merely partial for CS (which also retains a page-hosted tag path). This is a SEPARATE static
+       page, not part of the main SPA — applying a strict CSP to the SPA would break its own inline
+       scripts/router. Adjust the allowlist below if further research shows the real CS tag needs a
+       broader one; this is a reasonable strict starting point. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://t.contentsquare.net; connect-src 'self' https://t.contentsquare.net https://*.contentsquare.net; img-src 'self' https://picsum.photos https://fastly.picsum.photos; style-src 'self' 'unsafe-inline'">
+
+  <style>
+    body {
+      margin: 0;
+      padding: 24px 20px 64px;
+      max-width: 640px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1c1b1f;
+      background: #f6f5f3;
+    }
+    h1 { font-size: 20px; }
+    p { line-height: 1.5; color: #3a3a3a; }
+    .amp-mask {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 8px 12px;
+      background: #ffffff;
+      border: 1px solid #e4e2df;
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+  </style>
+
+  <!-- ANALYTICS TAG SWAP POINT — exactly one tag is active at a time. -->
+  <!-- Currently: ContentSquare web tag. -->
+  <script src="https://t.contentsquare.net/uxa/7d6fa3e389620.js" async></script>
+  <!-- To swap to a competitor's JS SDK later: replace the single <script> line above only. -->
+</head>
+<body>
+  <h1>CSP-strict test page</h1>
+  <p>
+    This page exists specifically to test the CSP-exemption behavior of native-injected bridge code
+    (MOBILE-20276, Part D row 8). It is served with a strict <code>Content-Security-Policy</code> meta
+    tag above — if you can read this paragraph and see the marker below, the page itself rendered
+    despite the strict policy. The open question is whether a mobile SDK's native-injected WebView
+    bridge/recorder is exempt from this page's own CSP, or is blocked by it the same way a page-hosted
+    script would be.
+  </p>
+  <span class="amp-mask">Saved Note: MASK-ME</span>
+</body>
+</html>

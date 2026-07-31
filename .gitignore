@@ -1,1 +1,7 @@
 .DS_Store
+# mkcert-issued cert + private key for the local explicit-port test server
+# (competitor_analysis/webharness-tools/serve_explicit_port.py). Regenerate
+# with: mkcert -cert-file certs/dev-origin.pem -key-file certs/dev-origin-key.pem
+# localhost 127.0.0.1 ::1 10.0.2.2 -- never commit the private key to this
+# public repo.
+certs/

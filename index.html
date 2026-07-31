@@ -2,6 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+
+  <!-- MUST stay the first <script> tag, inline (not deferred/async, not moved into app.js), and must
+       never be reordered below the viewport meta / stylesheet / analytics tag: a synchronous write here
+       is the earliest externally-observable timestamp on the page, so a native recorder that attaches
+       before vs. after this line executes is distinguishable (Part D — "WKUserScript.injectionTime probe" /
+       discovery-latency measurement, row 3). -->
+  <script>window.__head_probe_ts__ = Date.now();</script>
+
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTShop</title>
   <link rel="stylesheet" href="assets/style.css">
@@ -18,6 +26,7 @@
       <a href="#/" data-route="/">Home</a>
       <a href="#/cart" data-route="/cart">Cart<span id="cart-badge" class="cart-badge" hidden>0</span></a>
       <a href="#/account" data-route="/account">Account</a>
+      <a href="#/diagnostics" data-route="/diagnostics">Diagnostics</a>
     </nav>
   </header>
 
