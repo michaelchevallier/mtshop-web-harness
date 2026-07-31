@@ -1,0 +1,77 @@
+{
+  "_comment": "Shared product catalog for MOBILE-20276's native iOS/Android test apps AND the MOBILE-20605 web page. Keep all three surfaces reading from this exact list so they stay in visual/data parity. Do not fork per platform.",
+  "products": [
+    {
+      "id": "p-001",
+      "name": "Classic Crewneck Tee",
+      "category": "Tops",
+      "price": 24.0,
+      "isOnSale": false,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p001/600/600",
+      "description": "A soft, breathable cotton tee that goes with everything. Regular fit, crew neckline."
+    },
+    {
+      "id": "p-002",
+      "name": "Windbreaker Jacket",
+      "category": "Outerwear",
+      "price": 79.0,
+      "isOnSale": true,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p002/600/600",
+      "description": "Lightweight, packable windbreaker with a water-resistant shell and adjustable hood."
+    },
+    {
+      "id": "p-003",
+      "name": "Running Sneakers",
+      "category": "Shoes",
+      "price": 95.0,
+      "isOnSale": false,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p003/600/600",
+      "description": "Cushioned midsole and breathable mesh upper built for daily miles."
+    },
+    {
+      "id": "p-004",
+      "name": "Leather Belt",
+      "category": "Accessories",
+      "price": 32.0,
+      "isOnSale": false,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p004/600/600",
+      "description": "Full-grain leather belt with a brushed metal buckle."
+    },
+    {
+      "id": "p-005",
+      "name": "Wireless Earbuds",
+      "category": "Electronics",
+      "price": 129.0,
+      "isOnSale": true,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p005/600/600",
+      "description": "Active noise cancellation, 24h battery with the charging case, IPX4 splash resistance."
+    },
+    {
+      "id": "p-006",
+      "name": "Canvas Tote Bag",
+      "category": "Accessories",
+      "price": 18.0,
+      "isOnSale": false,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p006/600/600",
+      "description": "Heavy-duty canvas tote with an interior pocket. Fits a 13-inch laptop."
+    },
+    {
+      "id": "p-007",
+      "name": "Slim Fit Chinos",
+      "category": "Bottoms",
+      "price": 54.0,
+      "isOnSale": false,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p007/600/600",
+      "description": "Stretch cotton chinos, tapered leg, machine washable."
+    },
+    {
+      "id": "p-008",
+      "name": "Smart Fitness Watch",
+      "category": "Electronics",
+      "price": 199.0,
+      "isOnSale": true,
+      "imageUrl": "https://picsum.photos/seed/mtshop-p008/600/600",
+      "description": "Heart-rate, sleep and workout tracking with a 7-day battery and always-on display."
+    }
+  ]
+}

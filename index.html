@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MTShop</title>
+  <link rel="stylesheet" href="assets/style.css">
+
+  <!-- ANALYTICS TAG SWAP POINT — exactly one tag is active at a time. -->
+  <!-- Currently: ContentSquare web tag. -->
+  <script src="https://t.contentsquare.net/uxa/7d6fa3e389620.js" async></script>
+  <!-- To swap to a competitor's JS SDK later: replace the single <script> line above only. -->
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#/">MTShop</a>
+    <nav class="site-nav">
+      <a href="#/" data-route="/">Home</a>
+      <a href="#/cart" data-route="/cart">Cart<span id="cart-badge" class="cart-badge" hidden>0</span></a>
+      <a href="#/account" data-route="/account">Account</a>
+    </nav>
+  </header>
+
+  <main id="app" class="app-main">
+    <p class="loading">Loading MTShop…</p>
+  </main>
+
+  <div id="mutation-strip" class="mutation-strip" aria-hidden="true">mutation #0</div>
+
+  <script src="assets/app.js" defer></script>
+</body>
+</html>
