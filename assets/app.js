@@ -599,6 +599,7 @@
       [2000, "install egress counters", installEgressCounters],
       [4000, "forge port-generation recorder", forgePortGenerationBridge],
       [6000, "enumerate CS bridge surface", inspectCsBridgeSurface],
+      [7000, "probe CS bridge invocability (string/primitive args)", probeCsBridgeInvocability],
       [8000, "forge reflection-generation bridges (expected absent on 0.27.0+)", function () {
         forgeCsSendTransaction();
         forgeAmplitudeRecord();
@@ -873,6 +874,111 @@
     }
   }
 
+  // Scenario: "which Android bridge members are actually INVOCABLE" — added 2026-08-03
+  // (summary.md ▶️ START THE NEXT CONVERSATION HERE, item 1). The forge panel above calls
+  // CSJavascriptBridge members with an OBJECT argument; on Android's addJavascriptInterface an
+  // object marshals to the string "undefined", so the "Method not found" it produces is a
+  // SIGNATURE-MISMATCH artifact, not a defence (webview-functional-runs skill, "bridge / forgery"
+  // section). This retries every runtime-enumerated member with STRING/PRIMITIVE argument shapes —
+  // what a real @JavascriptInterface overload actually accepts — to bound the real forgeable surface.
+  var CS_BRIDGE_MEMBERS_TO_PROBE = [
+    "addEventProperties", "addUserProperties", "clearEventProperties",
+    "getAssetTransformerMode", "getVersion", "identify", "onWebviewTrackingReady",
+    "optIn", "optOut", "removeEventProperty", "resetIdentity", "sendAssets",
+    "sendDynamicVar", "sendEvent", "sendLog", "sendNativeSREvent", "sendSREvent",
+    "sendTransaction"
+  ];
+
+  function argShapesForInvocabilityProbe(marker) {
+    // Cheapest/most-likely shapes first — probeCsBridgeInvocability stops at the first shape that
+    // resolves, so ordering here controls which marker ends up in a landed telemetry/replay payload.
+    return [
+      { label: "0 args", args: [] },
+      { label: "1 string arg", args: [marker] },
+      { label: "2 string args", args: [marker, marker] },
+      { label: "1 JSON-string arg", args: [JSON.stringify({ forged: marker })] },
+      { label: "1 number arg", args: [1] }
+    ];
+  }
+
+  function looksLikeMethodNotFound(message) {
+    return typeof message === "string" && /method not found/i.test(message);
+  }
+
+  function probeCsBridgeInvocability() {
+    try {
+      var bridge = window.CSJavascriptBridge;
+      if (!bridge) {
+        appendLogLine("forge-log", "invocability probe: CSJavascriptBridge not present");
+        return;
+      }
+
+      appendLogLine(
+        "forge-log",
+        "invocability probe: retrying " + CS_BRIDGE_MEMBERS_TO_PROBE.length +
+          " members with STRING/PRIMITIVE args (object args marshal to \"undefined\" and were already ruled out)"
+      );
+
+      CS_BRIDGE_MEMBERS_TO_PROBE.forEach(function (memberName) {
+        try {
+          if (typeof bridge[memberName] !== "function") {
+            appendLogLine("forge-log", "invocability | " + memberName + ": not a callable member on this build");
+            return;
+          }
+
+          var marker = "CSFORGEPROBE-" + memberName + "-" + Date.now();
+          var shapes = argShapesForInvocabilityProbe(marker);
+          var resolvedShape = null;
+          var attempts = [];
+
+          for (var i = 0; i < shapes.length; i++) {
+            var shape = shapes[i];
+            try {
+              bridge[memberName].apply(bridge, shape.args);
+              // No throw at all is the strongest signal available: this shape reached native code.
+              resolvedShape = shape.label + " (no throw)";
+              attempts.push(shape.label + ": no throw");
+              break;
+            } catch (err) {
+              var msg = err && err.message ? err.message : String(err);
+              attempts.push(shape.label + ": threw \"" + msg + "\"");
+              if (!looksLikeMethodNotFound(msg)) {
+                // A DIFFERENT error (e.g. a parse failure) still proves the call resolved to a real
+                // overload and reached native — only "Method not found" means this shape didn't match
+                // any @JavascriptInterface signature.
+                resolvedShape = shape.label + " (reached native, threw non-\"Method not found\": " + msg + ")";
+                break;
+              }
+            }
+          }
+
+          if (resolvedShape) {
+            appendLogLine(
+              "forge-log",
+              "invocability | " + memberName + ": INVOCABLE via " + resolvedShape + " — marker " + marker
+            );
+          } else {
+            appendLogLine(
+              "forge-log",
+              "invocability | " + memberName + ": no match among " + shapes.length + " shapes tried (" +
+                attempts.join(" · ") + ") — NOT proven safe, only these shapes are ruled out"
+            );
+          }
+        } catch (err) {
+          appendLogLine("forge-log", "invocability | " + memberName + ": probe itself threw (" + err.message + ")");
+        }
+      });
+
+      appendLogLine(
+        "forge-log",
+        "invocability probe complete — any member marked INVOCABLE reached native; check its marker for " +
+          "landing exactly like the port-generation forge marker (AMPFORGEDMARKER)"
+      );
+    } catch (err) {
+      appendLogLine("forge-log", "probeCsBridgeInvocability: threw (" + err.message + ")");
+    }
+  }
+
   // Scenario: ⭐ PRIORITY "dual collection" — load Amplitude's public browser Session Replay SDK
   // (@amplitude/session-replay-browser) inside a page that may already be sitting in an
   // Amplitude-instrumented WebView, to see whether two independent replay streams result.
@@ -1021,12 +1127,16 @@
       '<button type="button" id="forge-delete-btn" class="btn secondary">Attempt to delete/overwrite bridges</button>' +
       '<button type="button" id="forge-port-btn" class="btn secondary">Forge port-gen recorder (Amplitude 0.27.0+)</button>' +
       '<button type="button" id="inspect-cs-btn" class="btn secondary">Enumerate CS bridge surface</button>' +
+      '<button type="button" id="probe-invocability-btn" class="btn secondary">Probe CS bridge invocability (string args)</button>' +
       "</div>" +
       '<p class="diag-meta">The first three buttons target the <em>reflection</em>-generation names ' +
       "(<code>AmplitudeNativeSessionReplay</code>, &le;0.22.1). Amplitude 0.27.0+ installs " +
       "<code>__amp_listener_attached</code> + <code>amp_injected_recorder</code> instead, so on current " +
       'stable those three correctly report "not present" — that is a name mismatch, <strong>not</strong> ' +
-      "evidence the bridge is unreachable. Use the port-gen button for current stable.</p>" +
+      "evidence the bridge is unreachable. Use the port-gen button for current stable. The invocability " +
+      "button retries every enumerated CSJavascriptBridge member with string/primitive args instead of " +
+      "an object, since an object argument marshals to \"undefined\" across addJavascriptInterface and " +
+      'makes every member falsely report "Method not found".</p>' +
       '<div id="forge-log" class="diag-log" aria-live="polite"></div>' +
       "</section>" +
 
@@ -1191,6 +1301,70 @@
   }
 
   // ---------------------------------------------------------------------
+  // Run label — MOBILE-20276 self-identifying overlay, added 2026-08-03.
+  //
+  // WHY: the interactive Session-Replay review (session-review-queue.md) goes session by session, and
+  // the DOM *is* the replay — so anything rendered here is exactly what shows up in the recording. A
+  // reviewer opening a replay cold has no way to tell which run it is without this. It especially
+  // matters for Amplitude's explicit-port failure, which is otherwise invisible: the replay looks
+  // healthy and the WebView is simply an empty iframe, so the ORIGIN has to be on screen too.
+  //
+  // Opt-in via a "runlabel" param riding in the initial hash, exactly like "autorun" — most page loads
+  // (real shop browsing) carry none and render nothing. Read once at BOOT from the raw initial hash,
+  // not via routeQueryParam()/currentRouteQuery, because those are re-parsed on every in-app navigation
+  // and would lose the label the moment a reviewer clicks a nav link.
+  // ---------------------------------------------------------------------
+  function parseInitialHashParam(name) {
+    try {
+      var hash = window.location.hash || "";
+      var qIndex = hash.indexOf("?");
+      if (qIndex === -1) return null;
+      var parts = hash.slice(qIndex + 1).split("&");
+      for (var i = 0; i < parts.length; i++) {
+        var eqIndex = parts[i].indexOf("=");
+        var key = eqIndex === -1 ? parts[i] : parts[i].slice(0, eqIndex);
+        if (decodeURIComponent(key) === name) {
+          return eqIndex === -1 ? "" : decodeURIComponent(parts[i].slice(eqIndex + 1));
+        }
+      }
+    } catch (err) {
+      // malformed initial hash — treat as absent.
+    }
+    return null;
+  }
+
+  function renderRunLabel() {
+    try {
+      var supplied = parseInitialHashParam("runlabel");
+      if (!supplied) return; // most loads carry none — nothing to render.
+
+      // location.host (not a caller-supplied token) so the label can never claim the wrong origin —
+      // that guarantee is the entire point of putting the origin on screen.
+      var runId = parseInitialHashParam("runid") || Date.now().toString(36).slice(-4);
+      var text = supplied + "/" + window.location.host + " · run " + runId;
+
+      var el = document.createElement("div");
+      el.id = "run-label";
+      el.setAttribute("aria-hidden", "true");
+      el.style.cssText =
+        "position:fixed;top:0;left:0;right:0;z-index:99999;" +
+        "background:#111;color:#39ff14;font:12px/1.5 monospace;" +
+        "padding:3px 8px;text-align:center;pointer-events:none;white-space:pre-wrap;word-break:break-all;";
+      el.textContent = text;
+      document.body.insertBefore(el, document.body.firstChild);
+
+      console.log("[run-label] " + text);
+    } catch (err) {
+      // Rendering the label is best-effort diagnostics — never let it break page boot.
+      try {
+        console.log("[run-label] renderRunLabel threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Continuous DOM mutation strip — sitewide, independent of the router,
   // never display:none (it must actually render and repaint).
   // ---------------------------------------------------------------------
@@ -1215,6 +1389,7 @@
   // Boot
   // ---------------------------------------------------------------------
   function boot() {
+    renderRunLabel();
     startMutationStrip();
     loadProducts()
       .then(function () {
