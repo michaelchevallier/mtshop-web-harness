@@ -561,6 +561,82 @@
 
   var egressCounters = null;
 
+  // Set by parseHash() from any query string riding inside the hash.
+  var currentRouteQuery = "";
+
+  function routeQueryParam(name) {
+    try {
+      var parts = currentRouteQuery.split("&");
+      for (var i = 0; i < parts.length; i++) {
+        var kv = parts[i].split("=");
+        if (decodeURIComponent(kv[0]) === name) {
+          return kv.length > 1 ? decodeURIComponent(kv[1]) : "";
+        }
+      }
+    } catch (err) {
+      // malformed query — treat as absent.
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------
+  // AUTORUN — added 2026-08-03 for MOBILE-20603 item 1(c).
+  //
+  // WHY: the iOS Simulator has no tap tooling at all (no uiautomator, no idb, no cliclick; AppleScript
+  // needs an Accessibility grant this environment cannot grant), so the Diagnostics panel was
+  // undrivable on iOS — which is why iOS had zero functional validation. On Android, tapping worked but
+  // was fragile: every action appends to a log, which pushes later panels down, so coordinates captured
+  // from an earlier screenshot silently miss and produce NO output — indistinguishable from a probe
+  // that ran and found nothing.
+  //
+  // Driving the probes from the URL instead makes both platforms scriptable and the run reproducible.
+  // Everything goes through console.* which both host apps forward into logcat / os_log.
+  // Reached via "#/diagnostics?autorun=1" (or "autorun=dual" to also load the web SR SDK).
+  // ---------------------------------------------------------------------
+  function startAutorun(mode) {
+    var steps = [
+      [500, "scan for bridges", scanForBridges],
+      [2000, "install egress counters", installEgressCounters],
+      [4000, "forge port-generation recorder", forgePortGenerationBridge],
+      [6000, "enumerate CS bridge surface", inspectCsBridgeSurface],
+      [8000, "forge reflection-generation bridges (expected absent on 0.27.0+)", function () {
+        forgeCsSendTransaction();
+        forgeAmplitudeRecord();
+        forgeDeleteOverwriteBridges();
+      }],
+      [10000, "inject oversized/malformed content", injectOversizedContent]
+    ];
+
+    // Loading the web SR SDK changes the page's own network behaviour, so it is opt-in per mode.
+    if (mode === "dual") {
+      steps.push([13000, "load Amplitude web Session Replay SDK (dual collection)", loadAmplitudeWebSdk]);
+    }
+
+    // Counters are read late so slow bridge traffic has time to accumulate.
+    steps.push([20000, "read egress counts", renderEgressCounts]);
+
+    appendLogLine("forge-log", "AUTORUN START (mode=" + mode + ") — " + steps.length + " steps");
+
+    steps.forEach(function (step) {
+      setTimeout(function () {
+        try {
+          console.log("[diagnostics] AUTORUN STEP: " + step[1]);
+          step[2]();
+        } catch (err) {
+          console.log("[diagnostics] AUTORUN STEP FAILED (" + step[1] + "): " + err.message);
+        }
+      }, step[0]);
+    });
+
+    setTimeout(function () {
+      try {
+        console.log("[diagnostics] AUTORUN COMPLETE");
+      } catch (err) {
+        // no console — nothing to do.
+      }
+    }, 21000);
+  }
+
   function installEgressCounters() {
     if (egressCounters) {
       appendLogLine("egress-log", "counters already installed — counts are cumulative since install");
@@ -675,14 +751,30 @@
         appendLogLine("forge-log", RECORDER + ": present (typeof " + typeof window[RECORDER] + ")");
 
         try {
+          // The forged event carries a distinctive sentinel so "did it LAND?" is answerable rather than
+          // inferred. "Called without throwing" is NOT evidence of ingestion — the only proof is finding
+          // this marker inside the uploaded replay (Amplitude's /api/1/session-replays/files, or an
+          // on-device payload decode). Injecting a text node makes the marker survive as literal text.
+          var marker = "AMPFORGEDMARKER-" + Date.now();
           var envelope = JSON.stringify({
             type: 3,
-            data: { source: 0, texts: [], attributes: [], removes: [], adds: [] },
+            data: {
+              source: 0,
+              texts: [],
+              attributes: [],
+              removes: [],
+              adds: [{
+                parentId: 1,
+                nextId: null,
+                node: { type: 3, textContent: marker, id: 999999 }
+              }]
+            },
             timestamp: Date.now()
           });
           var ret = window[RECORDER](envelope);
           appendLogLine("forge-log",
-            RECORDER + "(<forged rrweb envelope>): called without throwing, returned " + typeof ret);
+            RECORDER + "(<forged rrweb envelope, marker " + marker + ">): called without throwing, returned " +
+            typeof ret + " — LANDING STILL UNPROVEN until this marker is found in the uploaded replay");
         } catch (err) {
           appendLogLine("forge-log", RECORDER + "(<forged rrweb envelope>): threw (" + err.message + ")");
         }
@@ -1037,6 +1129,19 @@
         // no console — nothing more to do.
       }
     }
+
+    try {
+      var autorun = routeQueryParam("autorun");
+      if (autorun !== null && autorun !== "0") {
+        startAutorun(autorun === "" ? "1" : autorun);
+      }
+    } catch (err) {
+      try {
+        console.log("[diagnostics] autorun dispatch threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1045,6 +1150,19 @@
   function parseHash() {
     var hash = window.location.hash || "#/";
     var path = hash.replace(/^#/, "");
+
+    // A query string may ride along inside the hash (e.g. "#/diagnostics?autorun=1"). It is parsed off
+    // here so route matching still works, and stashed for the diagnostics view's autorun mode. The hash
+    // is used rather than a real query string because the host apps navigate to one fixed URL and only
+    // append a suffix to it — see `webViewURLSuffix` (iOS launch arg) / `urlSuffix` (Android intent extra).
+    var query = "";
+    var qIndex = path.indexOf("?");
+    if (qIndex !== -1) {
+      query = path.slice(qIndex + 1);
+      path = path.slice(0, qIndex);
+    }
+    currentRouteQuery = query;
+
     if (path === "" || path === "/") return { view: "home" };
 
     var productMatch = path.match(/^\/product\/(.+)$/);
