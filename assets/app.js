@@ -336,7 +336,16 @@
 
     knownGlobals.forEach(function (name) {
       try {
-        results.push(name + ": " + (name in window ? typeof window[name] : "not present"));
+        if (!(name in window)) {
+          results.push(name + ": not present");
+          return;
+        }
+        // Report the VALUE for primitives, not just the type: `__amp_listener_attached` is a boolean,
+        // and "boolean" alone cannot distinguish an attached bridge from a detached one.
+        var raw = window[name];
+        var t = typeof raw;
+        var shown = (t === "boolean" || t === "string" || t === "number") ? t + " = " + String(raw) : t;
+        results.push(name + ": " + shown);
       } catch (err) {
         results.push(name + ": error (" + err.message + ")");
       }
@@ -372,18 +381,40 @@
       results.push("generic sweep error: " + err.message);
     }
 
+    // The REAL discovery latency, from the head-probe watcher — i.e. when each global first existed.
+    // Reported inside the results block so it cannot be read in isolation from the presence list.
+    try {
+      var firstSeen = window.__bridge_first_seen__ || {};
+      var seenNames = Object.keys(firstSeen);
+      results.push("");
+      if (seenNames.length) {
+        results.push("-- discovery latency (ms after head probe) --");
+        seenNames.forEach(function (name) {
+          results.push("  " + name + ": +" + firstSeen[name].msSinceHeadProbe +
+            "ms (value at first sight: " + firstSeen[name].valueAtFirstSight + ")");
+        });
+      } else {
+        results.push("-- discovery latency: no watched global ever appeared --");
+      }
+    } catch (err) {
+      results.push("discovery-latency readout error: " + err.message);
+    }
+
     var timingLine;
     try {
       var scanTs = Date.now();
       if (typeof window.__head_probe_ts__ === "number") {
+        // NOTE: this is CLICK latency, not discovery latency — it measures how long after page load a
+        // human pressed Scan. It was previously easy to misread as a discovery measure; the real
+        // discovery numbers are in the results block above.
         timingLine =
-          "ms since head probe: " + (scanTs - window.__head_probe_ts__) +
-          " (head probe @ " + window.__head_probe_ts__ + ", scan @ " + scanTs + ")";
+          "click latency (NOT discovery): scan pressed " + (scanTs - window.__head_probe_ts__) +
+          "ms after head probe";
       } else {
-        timingLine = "ms since head probe: unavailable (window.__head_probe_ts__ not set)";
+        timingLine = "click latency: unavailable (window.__head_probe_ts__ not set)";
       }
     } catch (err) {
-      timingLine = "ms since head probe: error (" + err.message + ")";
+      timingLine = "click latency: error (" + err.message + ")";
     }
 
     try {
@@ -393,6 +424,18 @@
       if (resultsEl) resultsEl.textContent = results.length ? results.join("\n") : "(no matches)";
     } catch (err) {
       // rendering the results is best-effort; the scan itself already ran.
+    }
+
+    // Also emit every line through console.* so the scan is readable via the host app's
+    // console-forwarding channel (logcat / os_log) instead of only by screenshotting the WebView.
+    // Added 2026-08-03: reading these off-screen was the slowest part of the first functional run.
+    try {
+      console.log("[diagnostics] bridge scan — " + timingLine);
+      results.forEach(function (line) {
+        if (line) console.log("[diagnostics] bridge scan | " + line);
+      });
+    } catch (err) {
+      // no console — the DOM output above is still there.
     }
   }
 
@@ -502,6 +545,240 @@
         appendLogLine("forge-log", name + ": delete/overwrite probe threw (" + err.message + ")");
       }
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Port-generation bridge probes — added 2026-08-03 during MOBILE-20603 item 1(c).
+  //
+  // WHY THIS EXISTS (it closed a false negative): the forge panel above targets
+  // `AmplitudeNativeSessionReplay`, the global of Amplitude's REFLECTION-generation bridge (<= 0.22.1).
+  // Current stable 0.27.0 uses the WebMessagePort generation, which installs
+  // `__amp_listener_attached` + `amp_injected_recorder` instead — so the old panel reports "not
+  // present" on the version customers actually receive, and a reader could wrongly conclude the
+  // bridge is unreachable from page JS. An absent name and a WRONG name look identical. These probes
+  // target the surface the current generation really installs.
+  // ---------------------------------------------------------------------
+
+  var egressCounters = null;
+
+  function installEgressCounters() {
+    if (egressCounters) {
+      appendLogLine("egress-log", "counters already installed — counts are cumulative since install");
+      renderEgressCounts();
+      return;
+    }
+    egressCounters = { messagePort: 0, webkitHandlers: 0, portSample: "", webkitSample: "" };
+
+    // Android / port generation: the recorder ships events over a MessagePort transferred from native.
+    // Patching the PROTOTYPE rather than an instance is what makes this reachable from page JS without
+    // ever holding the port itself — that is the whole point of the test.
+    try {
+      if (typeof MessagePort !== "undefined" && MessagePort.prototype &&
+          typeof MessagePort.prototype.postMessage === "function") {
+        var originalPortPost = MessagePort.prototype.postMessage;
+        MessagePort.prototype.postMessage = function () {
+          try {
+            egressCounters.messagePort += 1;
+            if (!egressCounters.portSample && arguments.length) {
+              egressCounters.portSample = String(arguments[0]).slice(0, 300);
+            }
+          } catch (err) {
+            // never break the real send — this probe observes, it does not interfere.
+          }
+          return originalPortPost.apply(this, arguments);
+        };
+        appendLogLine("egress-log",
+          "MessagePort.prototype.postMessage WRAPPED from page JS — page can now observe every bridge message");
+      } else {
+        appendLogLine("egress-log", "MessagePort not available in this WebView");
+      }
+    } catch (err) {
+      appendLogLine("egress-log", "MessagePort wrap threw (" + err.message + ")");
+    }
+
+    // iOS: the WKScriptMessageHandler surface. Assignment onto a native-backed proxy may silently fail,
+    // so verify the wrap actually took rather than assuming it did.
+    try {
+      var handlers = window.webkit && window.webkit.messageHandlers;
+      if (!handlers) {
+        appendLogLine("egress-log", "window.webkit.messageHandlers not present (expected off-iOS)");
+      } else {
+        var names = [];
+        try { names = Object.keys(handlers); } catch (err) { names = []; }
+        // Object.keys is often empty on the native-backed proxy, so also probe the names each vendor
+        // is known to register.
+        ["amplitude", "AmplitudeNativeSessionReplay", "amplitudeSessionReplay",
+         "csBridge", "contentsquare", "CSJavascriptBridge"].forEach(function (n) {
+          try {
+            if (names.indexOf(n) === -1 && handlers[n]) names.push(n);
+          } catch (err) {
+            // probing an absent handler can throw on some WebKit builds — ignore.
+          }
+        });
+        if (!names.length) {
+          appendLogLine("egress-log", "messageHandlers present but no handler name was discoverable");
+        }
+        names.forEach(function (n) {
+          try {
+            var h = handlers[n];
+            if (!h || typeof h.postMessage !== "function") return;
+            var originalHandlerPost = h.postMessage.bind(h);
+            var marker = function wrappedPostMessage() {
+              try {
+                egressCounters.webkitHandlers += 1;
+                if (!egressCounters.webkitSample && arguments.length) {
+                  egressCounters.webkitSample = String(arguments[0]).slice(0, 300);
+                }
+              } catch (err) {
+                // never break the real send.
+              }
+              return originalHandlerPost.apply(null, arguments);
+            };
+            h.postMessage = marker;
+            appendLogLine("egress-log", "messageHandlers." + n + ".postMessage wrap " +
+              (h.postMessage === marker
+                ? "SUCCEEDED — page JS can observe/tamper with this handler"
+                : "did NOT take effect (native-backed property defended the assignment)"));
+          } catch (err) {
+            appendLogLine("egress-log", "messageHandlers." + n + " wrap threw (" + err.message + ")");
+          }
+        });
+      }
+    } catch (err) {
+      appendLogLine("egress-log", "webkit handler wrap threw (" + err.message + ")");
+    }
+  }
+
+  function renderEgressCounts() {
+    if (!egressCounters) {
+      appendLogLine("egress-log", "counters not installed yet — nothing to report");
+      return;
+    }
+    appendLogLine("egress-log",
+      "counts since install — MessagePort.postMessage: " + egressCounters.messagePort +
+      " · webkit.messageHandlers.postMessage: " + egressCounters.webkitHandlers);
+    if (egressCounters.portSample) {
+      appendLogLine("egress-log", "first MessagePort payload (300 chars): " + egressCounters.portSample);
+    }
+    if (egressCounters.webkitSample) {
+      appendLogLine("egress-log", "first webkit payload (300 chars): " + egressCounters.webkitSample);
+    }
+  }
+
+  function forgePortGenerationBridge() {
+    var RECORDER = "amp_injected_recorder";
+
+    try {
+      if (!(RECORDER in window)) {
+        appendLogLine("forge-log", RECORDER + ": not present");
+      } else {
+        appendLogLine("forge-log", RECORDER + ": present (typeof " + typeof window[RECORDER] + ")");
+
+        try {
+          var envelope = JSON.stringify({
+            type: 3,
+            data: { source: 0, texts: [], attributes: [], removes: [], adds: [] },
+            timestamp: Date.now()
+          });
+          var ret = window[RECORDER](envelope);
+          appendLogLine("forge-log",
+            RECORDER + "(<forged rrweb envelope>): called without throwing, returned " + typeof ret);
+        } catch (err) {
+          appendLogLine("forge-log", RECORDER + "(<forged rrweb envelope>): threw (" + err.message + ")");
+        }
+
+        // Overwrite, then restore — a successful overwrite means page JS can silently stop recording.
+        // Restoring matters: the rest of the run still needs a live recorder.
+        try {
+          var saved = window[RECORDER];
+          window[RECORDER] = function killedRecorder() { return undefined; };
+          var overwritten = window[RECORDER] !== saved;
+          appendLogLine("forge-log", RECORDER + ": overwrite " + (overwritten
+            ? "SUCCEEDED — page JS can silently disable the recorder"
+            : "failed (assignment did not take effect)"));
+          window[RECORDER] = saved;
+          appendLogLine("forge-log", RECORDER + ": original restored after the overwrite probe");
+        } catch (err) {
+          appendLogLine("forge-log", RECORDER + ": overwrite probe threw (" + err.message + ")");
+        }
+      }
+    } catch (err) {
+      appendLogLine("forge-log", "port-generation recorder probe threw (" + err.message + ")");
+    }
+
+    // typeof alone hides true/false, and the false->true flip IS the handshake window.
+    try {
+      appendLogLine("forge-log", "__amp_listener_attached = " +
+        ("__amp_listener_attached" in window ? String(window.__amp_listener_attached) : "not present"));
+    } catch (err) {
+      appendLogLine("forge-log", "__amp_listener_attached read threw (" + err.message + ")");
+    }
+
+    // Is the transferred port itself reachable, or is it closure-held?
+    try {
+      var portProps = [];
+      if (typeof MessagePort !== "undefined") {
+        Object.getOwnPropertyNames(window).forEach(function (name) {
+          try {
+            if (window[name] instanceof MessagePort) portProps.push(name);
+          } catch (err) {
+            // throwing getter / cross-origin guard — skip.
+          }
+        });
+      }
+      appendLogLine("forge-log", portProps.length
+        ? "MessagePort instances reachable as window properties: " + portProps.join(", ")
+        : "no MessagePort instance exposed on window (transferred port is closure-held)");
+    } catch (err) {
+      appendLogLine("forge-log", "MessagePort sweep threw (" + err.message + ")");
+    }
+
+    try {
+      appendLogLine("forge-log", "first-seen latencies: " + JSON.stringify(window.__bridge_first_seen__ || {}));
+    } catch (err) {
+      appendLogLine("forge-log", "first-seen readout threw (" + err.message + ")");
+    }
+  }
+
+  // Enumerates CS's bridge at RUNTIME rather than trusting the method list read from source.
+  function inspectCsBridgeSurface() {
+    try {
+      appendLogLine("forge-log", "CS_isWebView = " +
+        ("CS_isWebView" in window ? String(window.CS_isWebView) : "not present"));
+    } catch (err) {
+      appendLogLine("forge-log", "CS_isWebView read threw (" + err.message + ")");
+    }
+
+    try {
+      var bridge = window.CSJavascriptBridge;
+      if (!bridge) {
+        appendLogLine("forge-log", "CSJavascriptBridge: not present — nothing to enumerate");
+        return;
+      }
+      var names = [];
+      var obj = bridge;
+      var depth = 0;
+      // Walk the prototype chain: an addJavascriptInterface object exposes its methods on the
+      // prototype, not as own properties, so an own-properties-only scan reports an empty surface.
+      while (obj && depth < 4) {
+        try {
+          Object.getOwnPropertyNames(obj).forEach(function (n) {
+            if (names.indexOf(n) === -1) names.push(n);
+          });
+        } catch (err) {
+          // ignore this level.
+        }
+        obj = Object.getPrototypeOf(obj);
+        depth += 1;
+      }
+      var callable = names.filter(function (n) {
+        try { return typeof bridge[n] === "function"; } catch (err) { return false; }
+      });
+      appendLogLine("forge-log",
+        "CSJavascriptBridge callable members (" + callable.length + "): " + callable.join(", "));
+    } catch (err) {
+      appendLogLine("forge-log", "CS bridge enumeration threw (" + err.message + ")");
+    }
   }
 
   // Scenario: ⭐ PRIORITY "dual collection" — load Amplitude's public browser Session Replay SDK
@@ -650,8 +927,30 @@
       '<button type="button" id="forge-cs-btn" class="btn secondary">Forge CS sendTransaction</button>' +
       '<button type="button" id="forge-amp-btn" class="btn secondary">Forge Amplitude record()</button>' +
       '<button type="button" id="forge-delete-btn" class="btn secondary">Attempt to delete/overwrite bridges</button>' +
+      '<button type="button" id="forge-port-btn" class="btn secondary">Forge port-gen recorder (Amplitude 0.27.0+)</button>' +
+      '<button type="button" id="inspect-cs-btn" class="btn secondary">Enumerate CS bridge surface</button>' +
       "</div>" +
+      '<p class="diag-meta">The first three buttons target the <em>reflection</em>-generation names ' +
+      "(<code>AmplitudeNativeSessionReplay</code>, &le;0.22.1). Amplitude 0.27.0+ installs " +
+      "<code>__amp_listener_attached</code> + <code>amp_injected_recorder</code> instead, so on current " +
+      'stable those three correctly report "not present" — that is a name mismatch, <strong>not</strong> ' +
+      "evidence the bridge is unreachable. Use the port-gen button for current stable.</p>" +
       '<div id="forge-log" class="diag-log" aria-live="polite"></div>' +
+      "</section>" +
+
+      '<!-- Scenario: bridge egress counting — needed by the ⭐ dual-collection test ("count both egress ' +
+      'paths") and by Security Test 2 (can page JS observe/tamper with bridge traffic?). Wrapping is ' +
+      "click-triggered, so counts start at install, never at page load. -->" +
+      '<section class="diag-panel" id="diag-egress">' +
+      "<h2>Bridge egress counters</h2>" +
+      "<p>Wraps <code>MessagePort.prototype.postMessage</code> (Android port bridge) and " +
+      "<code>window.webkit.messageHandlers.*.postMessage</code> (iOS) <em>from page JS</em>, then counts " +
+      "outbound bridge messages. Counts start at install, not at page load.</p>" +
+      '<div class="diag-actions">' +
+      '<button type="button" id="install-egress-btn" class="btn secondary">Install egress counters</button>' +
+      '<button type="button" id="read-egress-btn" class="btn secondary">Read counts</button>' +
+      "</div>" +
+      '<div id="egress-log" class="diag-log" aria-live="polite"></div>' +
       "</section>" +
 
       '<!-- Scenario: ⭐ PRIORITY "dual collection" — loading Amplitude\'s public browser Session Replay ' +
@@ -712,6 +1011,18 @@
 
       var forgeDeleteBtn = document.getElementById("forge-delete-btn");
       if (forgeDeleteBtn) forgeDeleteBtn.addEventListener("click", forgeDeleteOverwriteBridges);
+
+      var forgePortBtn = document.getElementById("forge-port-btn");
+      if (forgePortBtn) forgePortBtn.addEventListener("click", forgePortGenerationBridge);
+
+      var inspectCsBtn = document.getElementById("inspect-cs-btn");
+      if (inspectCsBtn) inspectCsBtn.addEventListener("click", inspectCsBridgeSurface);
+
+      var installEgressBtn = document.getElementById("install-egress-btn");
+      if (installEgressBtn) installEgressBtn.addEventListener("click", installEgressCounters);
+
+      var readEgressBtn = document.getElementById("read-egress-btn");
+      if (readEgressBtn) readEgressBtn.addEventListener("click", renderEgressCounts);
 
       var loadAmpBtn = document.getElementById("load-amp-web-sdk-btn");
       if (loadAmpBtn) loadAmpBtn.addEventListener("click", loadAmplitudeWebSdk);

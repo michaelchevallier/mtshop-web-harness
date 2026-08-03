@@ -8,7 +8,57 @@
        is the earliest externally-observable timestamp on the page, so a native recorder that attaches
        before vs. after this line executes is distinguishable (Part D — "WKUserScript.injectionTime probe" /
        discovery-latency measurement, row 3). -->
-  <script>window.__head_probe_ts__ = Date.now();</script>
+  <script>window.__head_probe_ts__ = Date.now();
+
+    // Bridge-appearance watcher — added 2026-08-03 for MOBILE-20603 item 1(c) ("discovery latency in
+    // frames/ms", Part D). The bridge-scan panel's own readout only measures the delay until a HUMAN
+    // clicked Scan, which is useless as a discovery measure. This records the first instant each
+    // native-injected global actually EXISTS, relative to the head probe above, so "when did the SDK
+    // reach the page" becomes an observable rather than an inference. It must stay inside this first
+    // inline script or the zero point is wrong. Polling is deliberately cheap (a handful of `in`
+    // checks) and stops itself after 60s.
+    (function () {
+      var WATCHED = [
+        "__amp_listener_attached",
+        "amp_injected_recorder",
+        "AmplitudeNativeSessionReplay",
+        "CSJavascriptBridge",
+        "CS_isWebView"
+      ];
+      var seen = {};
+      window.__bridge_first_seen__ = seen;
+      var startTs = window.__head_probe_ts__;
+      var deadline = startTs + 60000;
+
+      function poll() {
+        try {
+          for (var i = 0; i < WATCHED.length; i++) {
+            var name = WATCHED[i];
+            if (seen[name]) continue;
+            var present = false;
+            try { present = name in window; } catch (err) { present = false; }
+            if (!present) continue;
+            var now = Date.now();
+            var value;
+            try {
+              var raw = window[name];
+              var t = typeof raw;
+              value = (t === "boolean" || t === "string" || t === "number") ? String(raw) : t;
+            } catch (err) {
+              value = "unreadable";
+            }
+            // valueAtFirstSight matters separately from the current value: a flag can appear as
+            // false and flip to true later, and that gap is itself the handshake window.
+            seen[name] = { msSinceHeadProbe: now - startTs, valueAtFirstSight: value };
+          }
+        } catch (err) {
+          // best effort only — this must never break the page under test.
+        }
+        if (Date.now() < deadline) setTimeout(poll, 25);
+      }
+      poll();
+    })();
+  </script>
 
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MTShop</title>
