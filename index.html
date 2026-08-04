@@ -65,9 +65,11 @@
   <link rel="stylesheet" href="assets/style.css">
 
   <!-- ANALYTICS TAG SWAP POINT — exactly one tag is active at a time. -->
-  <!-- Currently: ContentSquare web tag. -->
+  <!-- Currently: ContentSquare web tag. cs-tag-init.js (setOption isWebView + trackPageview) MUST stay
+       immediately before the tag script — see that file's header comment for why. -->
+  <script src="assets/cs-tag-init.js"></script>
   <script src="https://t.contentsquare.net/uxa/7d6fa3e389620.js" async></script>
-  <!-- To swap to a competitor's JS SDK later: replace the single <script> line above only. -->
+  <!-- To swap to a competitor's JS SDK later: replace the tag <script> line above only. -->
 </head>
 <body>
   <header class="site-header">

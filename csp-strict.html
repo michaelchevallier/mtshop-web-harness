@@ -12,6 +12,8 @@
        scripts/router. Adjust the allowlist below if further research shows the real CS tag needs a
        broader one; this is a reasonable strict starting point. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://t.contentsquare.net; connect-src 'self' https://t.contentsquare.net https://*.contentsquare.net; img-src 'self' https://picsum.photos https://fastly.picsum.photos; style-src 'self' 'unsafe-inline'">
+  <!-- cs-tag-init.js is 'self'-hosted so it survives this CSP; an inline <script> here would violate
+       script-src (no 'unsafe-inline'). -->
 
   <style>
     body {
@@ -38,8 +40,9 @@
 
   <!-- ANALYTICS TAG SWAP POINT — exactly one tag is active at a time. -->
   <!-- Currently: ContentSquare web tag. -->
+  <script src="assets/cs-tag-init.js"></script>
   <script src="https://t.contentsquare.net/uxa/7d6fa3e389620.js" async></script>
-  <!-- To swap to a competitor's JS SDK later: replace the single <script> line above only. -->
+  <!-- To swap to a competitor's JS SDK later: replace the tag <script> line above only. -->
 </head>
 <body>
   <h1>CSP-strict test page</h1>
