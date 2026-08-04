@@ -548,6 +548,125 @@
   }
 
   // ---------------------------------------------------------------------
+  // CS-equivalent of the Amplitude forged-recorder finding — MOBILE-20276
+  // critical-findings-register.md Part 1 item 1's open caveat.
+  //
+  // WHY: forgePortGenerationBridge() found that ONE forged call to window.amp_injected_recorder()
+  // with a fabricated-but-well-formed rrweb envelope permanently and silently kills ALL further real
+  // WebView capture for the rest of the session, with the global still looking intact afterward
+  // (amplitude-android-forged-recorder-breaks-real-capture.md). CS's closest analogues are
+  // CSJavascriptBridge.sendSREvent (the continuous DOM-mutation channel the web tag calls once per
+  // real mutation) and .sendNativeSREvent (on Android, decoded only for JS_ERROR/CUSTOM_ERROR/
+  // NETWORK_REQUEST_METRIC; on iOS, decoded into typed InsertionMutation/RemovalMutation/etc. for
+  // every webview mutation — the closer structural analogue of Amplitude's own node-id-tracking
+  // mutation observer). Nobody had tried feeding either of them a malformed/fabricated payload and
+  // then checking whether CS's own subsequent REAL capture still works — this does that.
+  //
+  // The envelope below deliberately mirrors Amplitude's exact shape (a mutation claiming to add a
+  // text node under parentId 1 with a synthetic id 999999 never issued by any real snapshot) so the
+  // two vendors are tested the same way. Isolated per mode/method (no burst) so a break can be
+  // attributed to one call, exactly the lesson from the metadata-nulling attribution saga (Card 4)
+  // where firing many bridge members in one synchronous forEach made attribution impossible.
+  //
+  // The always-running sitewide mutation strip (startMutationStrip()) is this test's "does real
+  // capture survive afterward" probe, playing the same role Amplitude's page-side mutation ticker
+  // played in that investigation — look for it continuing to update, and for the CS session's own
+  // health (bridge presence, a harmless post-forge call) rather than assuming "no throw" proves
+  // anything either way (a JS-side success proves nothing about native acceptance either direction).
+  //
+  // ⚠️ Known asymmetry, disclosed rather than glossed over: unlike Amplitude's public Session Replay
+  // API, CS publishes no accessible replay-retrieval API here (its internal equivalent is VPN-gated
+  // and keyed on different identifiers) — so whether the forged/real content actually shows up in the
+  // rendered replay is NOT provable from this probe alone. It needs the human visual pass on the CS
+  // quick-playback link this run produces. This probe only proves/disproves the automatable half:
+  // does the call succeed, and does the session stay healthy and keep responding afterward.
+  //
+  // Reached via "#/diagnostics?csForgeSrMode=sendSREvent|sendNativeSREvent|both|none" (mode=none is
+  // the CONTROL arm — presence-check only, no call — same discipline as Amplitude's ampForgeMode=none).
+  // ---------------------------------------------------------------------
+  function forgeCsSrEventBridge(mode) {
+    mode = mode || "both";
+    try {
+      var bridge = window.CSJavascriptBridge;
+      if (!bridge) {
+        appendLogLine("forge-log", "CSJavascriptBridge: not present — cannot forge SR-event bridge, mode=" + mode);
+        return;
+      }
+
+      var targets = [];
+      if (mode === "both" || mode === "sendSREvent") targets.push("sendSREvent");
+      if (mode === "both" || mode === "sendNativeSREvent") targets.push("sendNativeSREvent");
+
+      if (!targets.length) {
+        appendLogLine("forge-log", "forgeCsSrEventBridge: mode=" + mode + " — CONTROL arm, no call made");
+      }
+
+      targets.forEach(function (methodName) {
+        try {
+          if (typeof bridge[methodName] !== "function") {
+            appendLogLine("forge-log", "CSJavascriptBridge." + methodName + ": not a callable member on this build");
+            return;
+          }
+
+          var marker = "CSFORGEDSRMARKER-" + methodName + "-" + Date.now();
+          var envelope = JSON.stringify({
+            type: 3,
+            data: {
+              source: 0,
+              texts: [], attributes: [], removes: [],
+              adds: [{
+                parentId: 1,
+                nextId: null,
+                node: { type: 3, textContent: marker, id: 999999 }
+              }]
+            },
+            timestamp: Date.now()
+          });
+          var ret = bridge[methodName](envelope);
+          appendLogLine(
+            "forge-log",
+            "CSJavascriptBridge." + methodName + "(<fabricated mutation envelope, marker " + marker +
+              ">): called without throwing, returned " + typeof ret +
+              " — LANDING UNPROVEN from here (no accessible CS replay-retrieval API); watch native " +
+              "health + the mutation-strip continuity, and the eventual replay link, for the real answer"
+          );
+        } catch (err) {
+          appendLogLine(
+            "forge-log",
+            "CSJavascriptBridge." + methodName + "(<fabricated mutation envelope>): threw (" + err.message + ")"
+          );
+        }
+      });
+
+      // Post-forge health check, delayed so it doesn't race the call itself: is the bridge still
+      // present, and does a harmless, unrelated call still succeed? This does NOT prove ingestion
+      // continues (see the "JS success proves nothing about native acceptance" rule) but a THROW here
+      // — where none occurred before the forge — would be strong evidence something broke.
+      setTimeout(function () {
+        try {
+          var b = window.CSJavascriptBridge;
+          appendLogLine(
+            "forge-log",
+            "post-forge health check (mode=" + mode + "): CSJavascriptBridge " + (b ? "still present" : "GONE")
+          );
+          if (b && typeof b.getVersion === "function") {
+            try {
+              var v = b.getVersion();
+              appendLogLine("forge-log", "post-forge health check: getVersion() -> " + v + " (no throw)");
+            } catch (err) {
+              appendLogLine("forge-log", "post-forge health check: getVersion() threw (" + err.message + ")");
+            }
+          }
+        } catch (err) {
+          appendLogLine("forge-log", "post-forge health check threw (" + err.message + ")");
+        }
+      }, 4000);
+    } catch (err) {
+      appendLogLine("forge-log", "forgeCsSrEventBridge: threw (" + err.message + ")");
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Port-generation bridge probes — added 2026-08-03 during MOBILE-20603 item 1(c).
   //
   // WHY THIS EXISTS (it closed a false negative): the forge panel above targets
@@ -1354,6 +1473,22 @@
     } catch (err) {
       try {
         console.log("[diagnostics] isolated-invoke dispatch threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
+
+    try {
+      var csForgeSrMode = routeQueryParam("csForgeSrMode");
+      if (csForgeSrMode) {
+        // Same +4s timing as the equivalent Amplitude forge step in the autorun battery, kept
+        // isolated (its own launch, not folded into startAutorun's burst) per the Card 4 lesson —
+        // one call, several seconds of clear air, so a break can be attributed to this call alone.
+        setTimeout(function () { forgeCsSrEventBridge(csForgeSrMode); }, 4000);
+      }
+    } catch (err) {
+      try {
+        console.log("[diagnostics] CS SR-event forge dispatch threw: " + err.message);
       } catch (err2) {
         // no console — nothing more to do.
       }
