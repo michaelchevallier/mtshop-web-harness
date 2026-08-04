@@ -745,13 +745,16 @@
     }
   }
 
-  // mode: "both" (default), "call-only", "overwrite-only" — added 2026-08-04 (MOBILE-20603 forged-event-
-  // landing item) to ATTRIBUTE an unexpected finding: on a real run, native `Amplitude: Adding event`
-  // logging went silent for ~72s starting right at this forge, and stayed silent across a later real
-  // (non-forged) DOM mutation elsewhere on the page — i.e. something here didn't just fail to inject fake
-  // content, it looked like it stopped the recorder from capturing ANYTHING further. "both" (the original
-  // behaviour) can't tell whether the forged CALL or the OVERWRITE+RESTORE caused that, since they always
-  // ran back-to-back. Reached via "#/diagnostics?autorun=1&ampForgeMode=call-only" (or "overwrite-only").
+  // mode: "both" (default), "call-only", "overwrite-only", "none" — added 2026-08-04 (MOBILE-20603
+  // forged-event-landing item) to ATTRIBUTE an unexpected finding: on a real run, native `Amplitude:
+  // Adding event` logging went silent for ~72s starting right at this forge, and stayed silent across a
+  // later real (non-forged) DOM mutation elsewhere on the page. "none" is the CONTROL — it skips both the
+  // forged call and the overwrite, doing only the presence check, so a run with "none" isolates whether
+  // the silence is caused by this forge at all versus an unrelated cause (e.g. OS-level process freezing
+  // observed in the same window — `ActivityManager: freezing … webview_service` /
+  // `Sending oneway calls to frozen process` — which every prior run also had exposure to, since this step
+  // has always been part of the default `autorun=1` battery). Reached via
+  // "#/diagnostics?autorun=1&ampForgeMode=call-only" (or "overwrite-only", or "none").
   function forgePortGenerationBridge(mode) {
     var RECORDER = "amp_injected_recorder";
     mode = mode || "both";
@@ -762,7 +765,7 @@
       } else {
         appendLogLine("forge-log", RECORDER + ": present (typeof " + typeof window[RECORDER] + "), mode=" + mode);
 
-        if (mode !== "overwrite-only") {
+        if (mode !== "overwrite-only" && mode !== "none") {
           try {
             // The forged event carries a distinctive sentinel so "did it LAND?" is answerable rather than
             // inferred. "Called without throwing" is NOT evidence of ingestion — the only proof is finding
@@ -793,7 +796,7 @@
           }
         }
 
-        if (mode !== "call-only") {
+        if (mode !== "call-only" && mode !== "none") {
           // Overwrite, then restore — a successful overwrite means page JS can silently stop recording.
           // Restoring matters: the rest of the run still needs a live recorder.
           try {
