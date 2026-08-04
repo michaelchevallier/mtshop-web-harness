@@ -321,6 +321,30 @@
     }
   }
 
+  // Scenario: "masking config reachability with a REAL customer config" (Part D, added 2026-08-04).
+  // `setPIISelectors` is CS's actual public `_uxa` command (confirmed against the tracking-tag source,
+  // tracking/sensitive/sensitive.commands.ts + sensitive.commands's SET_PII_COMMANDS registration in
+  // webViewSensitive.module.ts) — i.e. what a real customer would push to mask an arbitrary selector,
+  // not a baked-in CSS class like .amp-mask/.amp-block. Targets #privacy-target specifically because
+  // that marker carries NO class-based masking hook — it exists to test config-DRIVEN masking, the
+  // direct CS analogue of Amplitude's privacyConfig-driven target. Gated behind "csMask=1" rather than
+  // pushed unconditionally: masking a field permanently would change the baseline other findings rely on
+  // (several already-published checks read #privacy-target's plaintext).
+  function pushCsPiiMaskConfig() {
+    try {
+      window._uxa = window._uxa || [];
+      appendLogLine("forge-log", "pushing _uxa setPIISelectors -> #privacy-target (real customer masking command)");
+      window._uxa.push(["setPIISelectors", { PIISelectors: ["#privacy-target"], Attributes: [] }]);
+      appendLogLine(
+        "forge-log",
+        "setPIISelectors pushed — if the config reaches WebViewSensitiveModule, #privacy-target's text " +
+        "should be anonymized in this session's CS payload/replay from this point on"
+      );
+    } catch (err) {
+      appendLogLine("forge-log", "pushCsPiiMaskConfig: threw (" + err.message + ")");
+    }
+  }
+
   // Scenario: "bridge attack surface from page JS" / row 12 origin-allowlist exposure.
   // Enumerates window for known native-bridge globals plus a generic pattern sweep, and reports
   // discovery latency relative to window.__head_probe_ts__ (see index.html <head>).
@@ -733,6 +757,11 @@
     // Loading the web SR SDK changes the page's own network behaviour, so it is opt-in per mode.
     if (mode === "dual") {
       steps.push([13000, "load Amplitude web Session Replay SDK (dual collection)", loadAmplitudeWebSdk]);
+    }
+
+    // Opt-in only (see pushCsPiiMaskConfig's comment) — reached via "&csMask=1".
+    if (routeQueryParam("csMask") === "1") {
+      steps.push([11000, "push CS real customer PII-masking config (setPIISelectors -> #privacy-target)", pushCsPiiMaskConfig]);
     }
 
     // Counters are read late so slow bridge traffic has time to accumulate.
@@ -1213,10 +1242,13 @@
         );
         return;
       }
+      // URL param takes precedence so an autorun pass can supply a real key with zero taps (mirrors
+      // every other autorun input in this file); the input field stays for manual/click-driven use.
+      var apiKeyFromUrl = routeQueryParam("ampWebApiKey");
       var apiKeyInput = document.getElementById("amp-web-api-key");
-      var apiKey = apiKeyInput ? apiKeyInput.value : "";
+      var apiKey = apiKeyFromUrl || (apiKeyInput ? apiKeyInput.value : "");
       if (!apiKey) {
-        appendLogLine("amp-web-sdk-log", "enter an API key to actually initialize");
+        appendLogLine("amp-web-sdk-log", "enter an API key (or pass &ampWebApiKey=... in the URL) to actually initialize");
         return;
       }
       if (typeof sdk.init !== "function") {

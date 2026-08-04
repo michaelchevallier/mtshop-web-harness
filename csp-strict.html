@@ -38,6 +38,10 @@
     }
   </style>
 
+  <!-- Runs first and unconditionally, regardless of which native adapter is active — see
+       assets/csp-probe.js for what it checks and why. -->
+  <script src="assets/csp-probe.js"></script>
+
   <!-- ANALYTICS TAG SWAP POINT — exactly one tag is active at a time. -->
   <!-- Currently: ContentSquare web tag. -->
   <script src="assets/cs-tag-init.js"></script>
