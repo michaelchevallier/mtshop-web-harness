@@ -594,10 +594,13 @@
   // Reached via "#/diagnostics?autorun=1" (or "autorun=dual" to also load the web SR SDK).
   // ---------------------------------------------------------------------
   function startAutorun(mode) {
+    var ampForgeMode = routeQueryParam("ampForgeMode") || "both";
     var steps = [
       [500, "scan for bridges", scanForBridges],
       [2000, "install egress counters", installEgressCounters],
-      [4000, "forge port-generation recorder", forgePortGenerationBridge],
+      [4000, "forge port-generation recorder (mode=" + ampForgeMode + ")", function () {
+        forgePortGenerationBridge(ampForgeMode);
+      }],
       [6000, "enumerate CS bridge surface", inspectCsBridgeSurface],
       [7000, "probe CS bridge invocability (string/primitive args)", probeCsBridgeInvocability],
       [8000, "forge reflection-generation bridges (expected absent on 0.27.0+)", function () {
@@ -742,57 +745,69 @@
     }
   }
 
-  function forgePortGenerationBridge() {
+  // mode: "both" (default), "call-only", "overwrite-only" — added 2026-08-04 (MOBILE-20603 forged-event-
+  // landing item) to ATTRIBUTE an unexpected finding: on a real run, native `Amplitude: Adding event`
+  // logging went silent for ~72s starting right at this forge, and stayed silent across a later real
+  // (non-forged) DOM mutation elsewhere on the page — i.e. something here didn't just fail to inject fake
+  // content, it looked like it stopped the recorder from capturing ANYTHING further. "both" (the original
+  // behaviour) can't tell whether the forged CALL or the OVERWRITE+RESTORE caused that, since they always
+  // ran back-to-back. Reached via "#/diagnostics?autorun=1&ampForgeMode=call-only" (or "overwrite-only").
+  function forgePortGenerationBridge(mode) {
     var RECORDER = "amp_injected_recorder";
+    mode = mode || "both";
 
     try {
       if (!(RECORDER in window)) {
         appendLogLine("forge-log", RECORDER + ": not present");
       } else {
-        appendLogLine("forge-log", RECORDER + ": present (typeof " + typeof window[RECORDER] + ")");
+        appendLogLine("forge-log", RECORDER + ": present (typeof " + typeof window[RECORDER] + "), mode=" + mode);
 
-        try {
-          // The forged event carries a distinctive sentinel so "did it LAND?" is answerable rather than
-          // inferred. "Called without throwing" is NOT evidence of ingestion — the only proof is finding
-          // this marker inside the uploaded replay (Amplitude's /api/1/session-replays/files, or an
-          // on-device payload decode). Injecting a text node makes the marker survive as literal text.
-          var marker = "AMPFORGEDMARKER-" + Date.now();
-          var envelope = JSON.stringify({
-            type: 3,
-            data: {
-              source: 0,
-              texts: [],
-              attributes: [],
-              removes: [],
-              adds: [{
-                parentId: 1,
-                nextId: null,
-                node: { type: 3, textContent: marker, id: 999999 }
-              }]
-            },
-            timestamp: Date.now()
-          });
-          var ret = window[RECORDER](envelope);
-          appendLogLine("forge-log",
-            RECORDER + "(<forged rrweb envelope, marker " + marker + ">): called without throwing, returned " +
-            typeof ret + " — LANDING STILL UNPROVEN until this marker is found in the uploaded replay");
-        } catch (err) {
-          appendLogLine("forge-log", RECORDER + "(<forged rrweb envelope>): threw (" + err.message + ")");
+        if (mode !== "overwrite-only") {
+          try {
+            // The forged event carries a distinctive sentinel so "did it LAND?" is answerable rather than
+            // inferred. "Called without throwing" is NOT evidence of ingestion — the only proof is finding
+            // this marker inside the uploaded replay (Amplitude's /api/1/session-replays/files, or an
+            // on-device payload decode). Injecting a text node makes the marker survive as literal text.
+            var marker = "AMPFORGEDMARKER-" + Date.now();
+            var envelope = JSON.stringify({
+              type: 3,
+              data: {
+                source: 0,
+                texts: [],
+                attributes: [],
+                removes: [],
+                adds: [{
+                  parentId: 1,
+                  nextId: null,
+                  node: { type: 3, textContent: marker, id: 999999 }
+                }]
+              },
+              timestamp: Date.now()
+            });
+            var ret = window[RECORDER](envelope);
+            appendLogLine("forge-log",
+              RECORDER + "(<forged rrweb envelope, marker " + marker + ">): called without throwing, returned " +
+              typeof ret + " — LANDING STILL UNPROVEN until this marker is found in the uploaded replay");
+          } catch (err) {
+            appendLogLine("forge-log", RECORDER + "(<forged rrweb envelope>): threw (" + err.message + ")");
+          }
         }
 
-        // Overwrite, then restore — a successful overwrite means page JS can silently stop recording.
-        // Restoring matters: the rest of the run still needs a live recorder.
-        try {
-          var saved = window[RECORDER];
-          window[RECORDER] = function killedRecorder() { return undefined; };
-          var overwritten = window[RECORDER] !== saved;
-          appendLogLine("forge-log", RECORDER + ": overwrite " + (overwritten
-            ? "SUCCEEDED — page JS can silently disable the recorder"
-            : "failed (assignment did not take effect)"));
-          window[RECORDER] = saved;
-          appendLogLine("forge-log", RECORDER + ": original restored after the overwrite probe");
-        } catch (err) {
-          appendLogLine("forge-log", RECORDER + ": overwrite probe threw (" + err.message + ")");
+        if (mode !== "call-only") {
+          // Overwrite, then restore — a successful overwrite means page JS can silently stop recording.
+          // Restoring matters: the rest of the run still needs a live recorder.
+          try {
+            var saved = window[RECORDER];
+            window[RECORDER] = function killedRecorder() { return undefined; };
+            var overwritten = window[RECORDER] !== saved;
+            appendLogLine("forge-log", RECORDER + ": overwrite " + (overwritten
+              ? "SUCCEEDED — page JS can silently disable the recorder"
+              : "failed (assignment did not take effect)"));
+            window[RECORDER] = saved;
+            appendLogLine("forge-log", RECORDER + ": original restored after the overwrite probe");
+          } catch (err) {
+            appendLogLine("forge-log", RECORDER + ": overwrite probe threw (" + err.message + ")");
+          }
         }
       }
     } catch (err) {
@@ -1290,7 +1305,7 @@
       if (forgeDeleteBtn) forgeDeleteBtn.addEventListener("click", forgeDeleteOverwriteBridges);
 
       var forgePortBtn = document.getElementById("forge-port-btn");
-      if (forgePortBtn) forgePortBtn.addEventListener("click", forgePortGenerationBridge);
+      if (forgePortBtn) forgePortBtn.addEventListener("click", function () { forgePortGenerationBridge("both"); });
 
       var inspectCsBtn = document.getElementById("inspect-cs-btn");
       if (inspectCsBtn) inspectCsBtn.addEventListener("click", inspectCsBridgeSurface);
