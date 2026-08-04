@@ -979,6 +979,81 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // ISOLATED single-member invoke — added for MOBILE-20603 open item 1/2 (2026-08-04).
+  //
+  // WHY: probeCsBridgeInvocability() above fires all 17 members back-to-back in one synchronous
+  // forEach with zero delay between calls. That is exactly why the previous run's `optIn`/`optOut`/
+  // `resetIdentity` metadata-nulling callback landed in one ~100ms native log cluster and could not be
+  // attributed to a specific call — the JS-side timing gave no separation to read the native log
+  // against. This calls exactly ONE known-resolved member per timeslot, several seconds apart, so a
+  // native log line's timestamp can be matched to a single call unambiguously.
+  //
+  // Resolved shapes are carried over from the 2026-08-04 invocability retry (session-review-queue.md
+  // Card 3): optIn/optOut/resetIdentity all resolved via "0 args"; sendEvent resolved via "1 string
+  // arg" (a non-JSON string reaches native JSONObject(...) and throws a parse error — itself the
+  // corroborating signal item 2 is trying to reproduce on SDK 4.52.0).
+  // ---------------------------------------------------------------------
+  var ISOLATED_INVOKE_ARGS = {
+    optIn: [],
+    optOut: [],
+    resetIdentity: []
+    // sendEvent's args are built per-call below so the marker is unique per invocation.
+  };
+
+  function invokeCsBridgeMemberIsolated(memberName) {
+    try {
+      var bridge = window.CSJavascriptBridge;
+      if (!bridge) {
+        appendLogLine("forge-log", "isolated-invoke | " + memberName + ": CSJavascriptBridge not present");
+        return;
+      }
+      if (typeof bridge[memberName] !== "function") {
+        appendLogLine("forge-log", "isolated-invoke | " + memberName + ": not a callable member on this build");
+        return;
+      }
+
+      var marker = "CSISOLATED-" + memberName + "-" + Date.now();
+      var args = memberName === "sendEvent"
+        ? ["CSISOLATED-sendEvent-marker-" + marker] // deliberately not valid JSON — see header comment
+        : (ISOLATED_INVOKE_ARGS[memberName] || []);
+
+      appendLogLine(
+        "forge-log",
+        "isolated-invoke | " + memberName + ": calling now, marker=" + marker + ", args=" + JSON.stringify(args)
+      );
+      try {
+        bridge[memberName].apply(bridge, args);
+        appendLogLine("forge-log", "isolated-invoke | " + memberName + ": no throw");
+      } catch (err) {
+        appendLogLine("forge-log", "isolated-invoke | " + memberName + ": threw (" + err.message + ")");
+      }
+    } catch (err) {
+      appendLogLine("forge-log", "invokeCsBridgeMemberIsolated: threw (" + err.message + ")");
+    }
+  }
+
+  // Reached via "#/diagnostics?invokeMembers=optIn,optOut,resetIdentity&invokeDelayMs=6000" (delay is
+  // optional, default 6000ms — comfortably wider than the ~100ms cluster the original run showed, and
+  // wider than typical [csq-metadata] callback latency of ~120-330ms already measured on this project).
+  function startIsolatedInvokeSequence(memberListParam, delayMsParam) {
+    var members = memberListParam.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    var gap = parseInt(delayMsParam, 10);
+    if (!gap || gap < 500) gap = 6000;
+
+    appendLogLine(
+      "forge-log",
+      "ISOLATED-INVOKE SEQUENCE START — " + members.length + " member(s), " + gap +
+        "ms apart: " + members.join(", ")
+    );
+
+    members.forEach(function (memberName, idx) {
+      setTimeout(function () {
+        invokeCsBridgeMemberIsolated(memberName);
+      }, gap * (idx + 1));
+    });
+  }
+
   // Scenario: ⭐ PRIORITY "dual collection" — load Amplitude's public browser Session Replay SDK
   // (@amplitude/session-replay-browser) inside a page that may already be sitting in an
   // Amplitude-instrumented WebView, to see whether two independent replay streams result.
@@ -1248,6 +1323,19 @@
     } catch (err) {
       try {
         console.log("[diagnostics] autorun dispatch threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
+
+    try {
+      var invokeMembers = routeQueryParam("invokeMembers");
+      if (invokeMembers) {
+        startIsolatedInvokeSequence(invokeMembers, routeQueryParam("invokeDelayMs"));
+      }
+    } catch (err) {
+      try {
+        console.log("[diagnostics] isolated-invoke dispatch threw: " + err.message);
       } catch (err2) {
         // no console — nothing more to do.
       }
