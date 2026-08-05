@@ -1258,8 +1258,13 @@
         );
         return;
       }
-      sdk.init(apiKey, {});
-      appendLogLine("amp-web-sdk-log", "sessionReplay.init() called with the pasted key");
+      // serverZone: 'EU' — this project's Amplitude project is EU-resident (same reason the native
+      // adapters set ServerZone.EU/.EU explicitly). Found missing 2026-08-05 after a first dual-SDK run:
+      // the web SDK's remote-config fetch came back "403 Invalid API key" purely from hitting the US
+      // config host with an EU-only key — the exact zone-mismatch trap already known from the native
+      // side, just not yet applied here.
+      sdk.init(apiKey, { serverZone: "EU" });
+      appendLogLine("amp-web-sdk-log", "sessionReplay.init() called with the pasted key (serverZone: EU)");
     } catch (err) {
       appendLogLine("amp-web-sdk-log", "initAmplitudeWebSdkIfPossible: threw (" + err.message + ")");
     }
