@@ -1281,10 +1281,21 @@
       // init() is async (returns { promise }, per @amplitude/analytics-core's returnWrapper);
       // confirm identity actually stuck and log the replay_id components explicitly, once, so the
       // API can be queried without guessing.
-      var initResult = sdk.init(apiKey, { serverZone: "EU", sessionId: ampWebSessionId, deviceId: ampWebDeviceId });
+      // logLevel: 4 (LogLevel.Debug) -- the SDK's own internal logger DEFAULTS TO OFF
+      // (LogLevel.None) and only turns on when a caller explicitly passes logLevel, per
+      // `_init()`'s `Object.prototype.hasOwnProperty.call(options, 'logLevel') && ...enable(...)`
+      // gate (session-replay.ts:236). Without this, messages like "Session ... not being
+      // recorded due to lack of session id" or "...due to capture being disabled for project"
+      // never reach the console at all -- silently indistinguishable from "recording fine."
+      var initResult = sdk.init(apiKey, {
+        serverZone: "EU",
+        sessionId: ampWebSessionId,
+        deviceId: ampWebDeviceId,
+        logLevel: 4
+      });
       appendLogLine(
         "amp-web-sdk-log",
-        "sessionReplay.init() called (serverZone: EU, sessionId=" + ampWebSessionId + ", deviceId=" + ampWebDeviceId + ")"
+        "sessionReplay.init() called (serverZone: EU, sessionId=" + ampWebSessionId + ", deviceId=" + ampWebDeviceId + ", logLevel=Debug)"
       );
       if (initResult && typeof initResult.promise === "object" && typeof initResult.promise.then === "function") {
         initResult.promise.then(function () {
