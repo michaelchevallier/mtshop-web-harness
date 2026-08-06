@@ -1287,10 +1287,17 @@
       // gate (session-replay.ts:236). Without this, messages like "Session ... not being
       // recorded due to lack of session id" or "...due to capture being disabled for project"
       // never reach the console at all -- silently indistinguishable from "recording fine."
+      // sampleRate: 1.0 -- DEFAULT_SAMPLE_RATE is 0 (session-replay-browser/src/constants.ts:8), the
+      // SAME silent-zero trap that has already bitten this project twice on the NATIVE side
+      // (Amplitude iOS/Android SessionReplayPlugin also defaults sampleRate to 0.0). Missing this
+      // on the FIRST re-run of this card made getShouldRecord() log "Opting session ... out of
+      // recording due to sample rate" and produced an unresolvable web replay_id -- confirmed root
+      // cause, not a guess (found reading the Android re-run's own decoded "Amplitude Logger" output).
       var initResult = sdk.init(apiKey, {
         serverZone: "EU",
         sessionId: ampWebSessionId,
         deviceId: ampWebDeviceId,
+        sampleRate: 1.0,
         logLevel: 4
       });
       appendLogLine(
