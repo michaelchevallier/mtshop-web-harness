@@ -1263,8 +1263,44 @@
       // the web SDK's remote-config fetch came back "403 Invalid API key" purely from hitting the US
       // config host with an EU-only key — the exact zone-mismatch trap already known from the native
       // side, just not yet applied here.
-      sdk.init(apiKey, { serverZone: "EU" });
-      appendLogLine("amp-web-sdk-log", "sessionReplay.init() called with the pasted key (serverZone: EU)");
+      //
+      // MOBILE-20276 Card 14, found 2026-08-06 reading @amplitude/session-replay-browser source
+      // (session-replay.ts:727-737, `initialize()`): the SDK REQUIRES BOTH a sessionId and a
+      // deviceId to record anything at all -- with neither set it logs "Session is not being
+      // recorded due to lack of session id" and returns without ever calling recordEvents(). The
+      // previous dual-SDK run's "no session id ever surfaced from the web SDK side" was this, not
+      // a logging gap: the SDK never started recording, so there was nothing to surface.
+      //
+      // Deliberately generated INDEPENDENT of the native SDK's own deviceId/sessionId (not
+      // stitched) -- this answers the "unstitched dual collection" half of the checklist's Part D
+      // PRIORITY test design (does an independently-identified web recorder coexist with the
+      // native one with no dedup?). The stitched-identity half (same id on both sides, to observe
+      // backend merge behaviour) is a separate variant, not run here.
+      var ampWebSessionId = routeQueryParam("ampWebSessionId") || String(Date.now());
+      var ampWebDeviceId = routeQueryParam("ampWebDeviceId") || ("dual-sdk-web-" + ampWebSessionId);
+      // init() is async (returns { promise }, per @amplitude/analytics-core's returnWrapper);
+      // confirm identity actually stuck and log the replay_id components explicitly, once, so the
+      // API can be queried without guessing.
+      var initResult = sdk.init(apiKey, { serverZone: "EU", sessionId: ampWebSessionId, deviceId: ampWebDeviceId });
+      appendLogLine(
+        "amp-web-sdk-log",
+        "sessionReplay.init() called (serverZone: EU, sessionId=" + ampWebSessionId + ", deviceId=" + ampWebDeviceId + ")"
+      );
+      if (initResult && typeof initResult.promise === "object" && typeof initResult.promise.then === "function") {
+        initResult.promise.then(function () {
+          var gotSessionId = typeof sdk.getSessionId === "function" ? sdk.getSessionId() : "n/a";
+          var gotDeviceId = typeof sdk.getDeviceId === "function" ? sdk.getDeviceId() : "n/a";
+          appendLogLine(
+            "amp-web-sdk-log",
+            "post-init: getSessionId()=" + gotSessionId + " getDeviceId()=" + gotDeviceId +
+              " (replay_id for the API = " + gotDeviceId + "/" + gotSessionId + ")"
+          );
+        }).catch(function (err) {
+          appendLogLine("amp-web-sdk-log", "post-init promise rejected: " + (err && err.message));
+        });
+      } else {
+        appendLogLine("amp-web-sdk-log", "init() did not return the expected {promise} wrapper — check getSessionId()/getDeviceId() manually");
+      }
     } catch (err) {
       appendLogLine("amp-web-sdk-log", "initAmplitudeWebSdkIfPossible: threw (" + err.message + ")");
     }
