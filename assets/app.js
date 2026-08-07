@@ -1635,13 +1635,23 @@
   // 🔴 ORDERING IS LOAD-BEARING: `setPIISelectors` MUST be queued BEFORE the pageview it should apply to, or
   // it does not take effect. That is why the masking push cannot be a post-render `setTimeout` (the earlier
   // shape) — it has to precede the pageview for the very route whose content it is meant to mask.
+  // MOBILE-20276 (2026-08-07): csMask LATCHES once seen, and stays on for the rest of the page's life.
+  //
+  // WHY: the header's nav links are plain `#/route` hrefs, so tapping through to a route REWRITES the hash and
+  // DROPS the query string. Navigating to Account the way a user does therefore lost `csMask=1`, and the run
+  // silently became a default-masking test instead of a `setPIISelectors` test — which is exactly what happened
+  // on the 17:00 run. Latching lets a run open the WebView at `#/?csMask=1`, navigate normally, and still have
+  // the masking config queued before the Account pageview.
+  var csMaskLatched = false;
+
   function trackSpaPageview(viewName) {
     try {
       window._uxa = window._uxa || [];
 
       // Masking config FIRST, pageview SECOND — never the other way round.
-      if (routeQueryParam("csMask") === "1") {
-        console.log("[cs] csMask=1 — pushing setPIISelectors BEFORE the pageview for " + viewName);
+      if (routeQueryParam("csMask") === "1") csMaskLatched = true;
+      if (csMaskLatched) {
+        console.log("[cs] csMask latched — pushing setPIISelectors BEFORE the pageview for " + viewName);
         pushCsPiiMaskConfig();
       }
 
