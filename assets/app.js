@@ -293,6 +293,33 @@
       '<input id="secret" type="text" value="typed-secret-value" placeholder="Enter a promo code">' +
       "</div>" +
       "</div>";
+
+    // MOBILE-20276 (2026-08-07): let "csMask=1" fire on THIS route, not only via the diagnostics autorun.
+    //
+    // WHY this exists: every masking marker in this project lives in the Account view above, but the
+    // autorun battery — the only previous way to push `setPIISelectors` — dispatches from
+    // renderDiagnostics() only. On Android you can tap through to Account after the push; on iOS there is
+    // NO UI automation at all (no uiautomator/cliclick/AppleScript — see the webview-functional-runs
+    // skill), so the CS masking test was simply unrunnable on iOS: the config could never be pushed while
+    // its target element was on screen. That is what voided Card 12.
+    //
+    // Additive and opt-in: the diagnostics path is untouched, and with no "csMask=1" this route behaves
+    // exactly as before (other findings read #privacy-target's plaintext, so it must stay unmasked by
+    // default). The delay lets the vendor tag finish injecting before the command is queued — and it makes
+    // this deliberately a push-AFTER-render test, identical on both platforms. `setPIISelectors` is
+    // runtime-reconfigurable, so push-before-render is a DIFFERENT test; don't conflate the two.
+    try {
+      if (routeQueryParam("csMask") === "1") {
+        console.log("[account] csMask=1 — scheduling setPIISelectors push in 5s (AFTER this render)");
+        setTimeout(pushCsPiiMaskConfig, 5000);
+      }
+    } catch (err) {
+      try {
+        console.log("[account] csMask dispatch threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
