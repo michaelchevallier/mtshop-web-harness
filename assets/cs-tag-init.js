@@ -9,6 +9,16 @@
 // Without this push, the tag boots in its default non-WebView module graph unless the project itself
 // is server-side configured as isWebView=true — this project's project is NOT (confirmed with the user,
 // 2026-08-04) — so this client-side push is the only way to reach WebView mode.
+// MOBILE-20276 (2026-08-07): `setOption isWebView` STAYS here — it must be queued before the tag boots.
+//
+// The `trackPageview` that used to be on the next line has MOVED to app.js's router (`trackSpaPageview()`),
+// and must not come back. Two reasons, both of which broke real runs:
+//  1. This file runs once per document load. This is a hash-router SPA, so every in-page navigation replaced
+//     the whole DOM with NO pageview — and CS attaches replay content to pageviews, so everything after the
+//     initial route was orphaned. The router is the only place that sees every navigation.
+//  2. `setPIISelectors` must be queued BEFORE the pageview it applies to or masking does not take effect
+//     (user-confirmed 2026-08-07). A pageview fired from here, at load, always precedes any masking config
+//     the page could push, making the first route's pageview structurally unmaskable. The router pushes
+//     config first, pageview second.
 window._uxa = window._uxa || [];
 window._uxa.push(["setOption", "isWebView", true]);
-window._uxa.push(["trackPageview", window.location.pathname + window.location.hash.replace("#", "?__")]);

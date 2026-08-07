@@ -294,32 +294,12 @@
       "</div>" +
       "</div>";
 
-    // MOBILE-20276 (2026-08-07): let "csMask=1" fire on THIS route, not only via the diagnostics autorun.
+    // MOBILE-20276 masking note: "csMask=1" is handled centrally in `trackSpaPageview()`, NOT here.
     //
-    // WHY this exists: every masking marker in this project lives in the Account view above, but the
-    // autorun battery — the only previous way to push `setPIISelectors` — dispatches from
-    // renderDiagnostics() only. On Android you can tap through to Account after the push; on iOS there is
-    // NO UI automation at all (no uiautomator/cliclick/AppleScript — see the webview-functional-runs
-    // skill), so the CS masking test was simply unrunnable on iOS: the config could never be pushed while
-    // its target element was on screen. That is what voided Card 12.
-    //
-    // Additive and opt-in: the diagnostics path is untouched, and with no "csMask=1" this route behaves
-    // exactly as before (other findings read #privacy-target's plaintext, so it must stay unmasked by
-    // default). The delay lets the vendor tag finish injecting before the command is queued — and it makes
-    // this deliberately a push-AFTER-render test, identical on both platforms. `setPIISelectors` is
-    // runtime-reconfigurable, so push-before-render is a DIFFERENT test; don't conflate the two.
-    try {
-      if (routeQueryParam("csMask") === "1") {
-        console.log("[account] csMask=1 — scheduling setPIISelectors push in 5s (AFTER this render)");
-        setTimeout(pushCsPiiMaskConfig, 5000);
-      }
-    } catch (err) {
-      try {
-        console.log("[account] csMask dispatch threw: " + err.message);
-      } catch (err2) {
-        // no console — nothing more to do.
-      }
-    }
+    // An earlier version of this function pushed `setPIISelectors` on a 5s setTimeout after render. That is
+    // WRONG and it silently cannot work: the config must be queued **BEFORE the pageview** it should apply
+    // to (user-confirmed, 2026-08-07), and a post-render timeout always lands after it. The push now happens
+    // immediately before this route's `trackPageview`, which is the only ordering that takes effect.
   }
 
   // ---------------------------------------------------------------------
@@ -1644,6 +1624,39 @@
     return { view: "home" };
   }
 
+  // MOBILE-20276 (2026-08-07) — 🔴 SPA PAGEVIEW TRACKING. This was MISSING and it is a prerequisite for CS
+  // WebView tracking, not a nicety.
+  //
+  // `cs-tag-init.js` pushes exactly ONE `trackPageview` — at document load, for whatever route happened to be
+  // in the URL then. This is a hash-router SPA, so every subsequent in-page navigation replaced the entire
+  // DOM with NO pageview. CS processes replay content per pageview (and only *ended* pageviews are
+  // processed), so content rendered after the initial route had no pageview to attach to.
+  //
+  // 🔴 ORDERING IS LOAD-BEARING: `setPIISelectors` MUST be queued BEFORE the pageview it should apply to, or
+  // it does not take effect. That is why the masking push cannot be a post-render `setTimeout` (the earlier
+  // shape) — it has to precede the pageview for the very route whose content it is meant to mask.
+  function trackSpaPageview(viewName) {
+    try {
+      window._uxa = window._uxa || [];
+
+      // Masking config FIRST, pageview SECOND — never the other way round.
+      if (routeQueryParam("csMask") === "1") {
+        console.log("[cs] csMask=1 — pushing setPIISelectors BEFORE the pageview for " + viewName);
+        pushCsPiiMaskConfig();
+      }
+
+      var virtualPath = window.location.pathname + window.location.hash.replace("#", "?__");
+      console.log("[cs] trackPageview -> " + virtualPath + " (view=" + viewName + ")");
+      window._uxa.push(["trackPageview", virtualPath]);
+    } catch (err) {
+      try {
+        console.log("[cs] trackSpaPageview threw: " + err.message);
+      } catch (err2) {
+        // no console — nothing more to do.
+      }
+    }
+  }
+
   function route() {
     var parsed = parseHash();
     if (parsed.view === "product") {
@@ -1657,6 +1670,7 @@
     } else {
       renderHome();
     }
+    trackSpaPageview(parsed.view);
   }
 
   // ---------------------------------------------------------------------
